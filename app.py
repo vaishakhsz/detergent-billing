@@ -1,32 +1,18 @@
 """
-Detergent Billing Software - Streamlit Version
+Detergent Billing Software - Google Sheets Version
 Products: Dishwash Liquid 1L (₹120), Detergent Powder 1kg (₹120), 
          Dishwash Liquid 7+1 (₹840), Detergent Powder 7+1 (₹840)
-Google Sheets Database with Streamlit Secrets
+With Receipt Printing - No External Dependencies
 """
 
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
-
-# Try to import plotly, but provide fallback if not available
-try:
-    import plotly.express as px
-    import plotly.graph_objects as go
-    PLOTLY_AVAILABLE = True
-except ImportError:
-    PLOTLY_AVAILABLE = False
-    st.warning("⚠️ Plotly not installed. Charts will be disabled.")
-
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
-from reportlab.lib.units import inch
-import io
-import base64
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import json
 import os
+import io
 
 # ==================== PAGE CONFIG ====================
 st.set_page_config(
@@ -36,35 +22,30 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ==================== DEFAULT PRODUCTS ====================
-DEFAULT_PRODUCTS = [
-    {'name': 'Dishwash Liquid 1L', 'rate': 120, 'stock': 100, 'brand': 'Detergent', 'unit': 'Pcs'},
-    {'name': 'Detergent Powder 1kg', 'rate': 120, 'stock': 100, 'brand': 'Detergent', 'unit': 'Pcs'},
-    {'name': 'Dishwash Liquid 7+1', 'rate': 840, 'stock': 50, 'brand': 'Detergent', 'unit': 'Pack'},
-    {'name': 'Detergent Powder 7+1', 'rate': 840, 'stock': 50, 'brand': 'Detergent', 'unit': 'Pack'},
-]
-
 # ==================== GOOGLE SHEETS SETUP ====================
 
 def get_google_sheets_client():
-    """Authenticate using Streamlit Secrets"""
+    """Connect to Google Sheets using Streamlit Secrets"""
     try:
-        if 'google_sheets' not in st.secrets:
-            st.error("❌ Google Sheets credentials not found in secrets!")
-            return None
+        if 'google_sheets' in st.secrets:
+            creds_dict = dict(st.secrets['google_sheets'])
+        else:
+            st.warning("⚠️ Please upload your Service Account JSON file")
+            uploaded_file = st.file_uploader("Upload Service Account JSON", type=['json'])
+            if uploaded_file:
+                creds_dict = json.load(uploaded_file)
+            else:
+                return None
         
-        creds_dict = dict(st.secrets['google_sheets'])
-        scope = [
-            'https://spreadsheets.google.com/feeds',
-            'https://www.googleapis.com/auth/drive'
-        ]
+        scope = ['https://spreadsheets.google.com/feeds',
+                'https://www.googleapis.com/auth/drive']
+        
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
-        st.sidebar.success("✅ Connected to Google Sheets")
         return client
         
     except Exception as e:
-        st.error(f"❌ Authentication error: {str(e)}")
+        st.error(f"❌ Connection error: {str(e)}")
         return None
 
 def get_spreadsheet(client):
@@ -75,37 +56,13 @@ def get_spreadsheet(client):
         return spreadsheet
     except Exception as e:
         st.error(f"❌ Error opening spreadsheet: {str(e)}")
-        st.info("Make sure you've shared the sheet with: detergent-billing@detergent-billing.iam.gserviceaccount.com")
+        st.info("Share your sheet with: detergent-billing@detergent-billing.iam.gserviceaccount.com")
         return None
 
-# ==================== DATABASE FUNCTIONS ====================
+# ==================== DATABASE HELPERS ====================
 
-def initialize_sheets(spreadsheet):
-    """Initialize sheets if they don't exist"""
-    try:
-        required_sheets = ['Products', 'Parties', 'Invoices', 'Invoice_Items', 
-                          'Payments', 'Sales_Returns', 'Ledger_Adjustments']
-        
-        existing_sheets = [sheet.title for sheet in spreadsheet.worksheets()]
-        
-        for sheet_name in required_sheets:
-            if sheet_name not in existing_sheets:
-                spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=20)
-                st.info(f"📝 Created sheet: {sheet_name}")
-        
-        products_df = get_sheet_data(spreadsheet, 'Products')
-        if products_df.empty:
-            df = pd.DataFrame(DEFAULT_PRODUCTS)
-            update_sheet_data(spreadsheet, 'Products', df)
-            st.success("✅ Default products added to sheet!")
-        
-        return True
-    except Exception as e:
-        st.error(f"❌ Error initializing sheets: {str(e)}")
-        return False
-
-def get_sheet_data(spreadsheet, sheet_name):
-    """Get data from a Google Sheet as DataFrame"""
+def get_data(spreadsheet, sheet_name):
+    """Get data from a Google Sheet"""
     try:
         worksheet = spreadsheet.worksheet(sheet_name)
         data = worksheet.get_all_values()
@@ -118,8 +75,18 @@ def get_sheet_data(spreadsheet, sheet_name):
     except Exception as e:
         return pd.DataFrame()
 
-def update_sheet_data(spreadsheet, sheet_name, df):
-    """Update a Google Sheet with DataFrame data"""
+def add_row(spreadsheet, sheet_name, row_data):
+    """Add a row to a Google Sheet"""
+    try:
+        worksheet = spreadsheet.worksheet(sheet_name)
+        worksheet.append_row(row_data)
+        return True
+    except Exception as e:
+        st.error(f"Error adding row: {str(e)}")
+        return False
+
+def update_data(spreadsheet, sheet_name, df):
+    """Update a Google Sheet"""
     try:
         worksheet = spreadsheet.worksheet(sheet_name)
         worksheet.clear()
@@ -127,39 +94,59 @@ def update_sheet_data(spreadsheet, sheet_name, df):
             worksheet.update([df.columns.values.tolist()] + df.values.tolist())
         return True
     except Exception as e:
-        st.error(f"Error updating sheet {sheet_name}: {str(e)}")
+        st.error(f"Error updating: {str(e)}")
         return False
 
-def add_row_to_sheet(spreadsheet, sheet_name, row_data):
-    """Add a row to a Google Sheet"""
+# ==================== INITIALIZE SHEETS ====================
+
+def init_sheets(spreadsheet):
+    """Initialize sheets with default data"""
     try:
-        worksheet = spreadsheet.worksheet(sheet_name)
-        worksheet.append_row(row_data)
+        required_sheets = ['Products', 'Parties', 'Invoices', 'Invoice_Items', 
+                          'Payments', 'Sales_Returns']
+        
+        existing_sheets = [sheet.title for sheet in spreadsheet.worksheets()]
+        
+        for sheet_name in required_sheets:
+            if sheet_name not in existing_sheets:
+                spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=20)
+                st.info(f"📝 Created sheet: {sheet_name}")
+        
+        products = get_data(spreadsheet, 'Products')
+        if products.empty:
+            default_products = [
+                ['Dishwash Liquid 1L', 120, 100, 'Detergent', 'Pcs'],
+                ['Detergent Powder 1kg', 120, 100, 'Detergent', 'Pcs'],
+                ['Dishwash Liquid 7+1', 840, 50, 'Detergent', 'Pack'],
+                ['Detergent Powder 7+1', 840, 50, 'Detergent', 'Pack']
+            ]
+            headers = ['name', 'rate', 'stock', 'brand', 'unit']
+            df = pd.DataFrame(default_products, columns=headers)
+            update_data(spreadsheet, 'Products', df)
+            st.success("✅ Default products added!")
+        
+        parties = get_data(spreadsheet, 'Parties')
+        if parties.empty:
+            headers = ['id', 'shop_name', 'mobile', 'address', 'opening_balance']
+            df = pd.DataFrame(columns=headers)
+            update_data(spreadsheet, 'Parties', df)
+        
         return True
     except Exception as e:
-        st.error(f"Error adding row to {sheet_name}: {str(e)}")
+        st.error(f"Error initializing: {str(e)}")
         return False
 
 # ==================== PRODUCT FUNCTIONS ====================
 
 def get_products(spreadsheet):
     """Get all products"""
-    if not spreadsheet:
-        return pd.DataFrame(DEFAULT_PRODUCTS)
-    df = get_sheet_data(spreadsheet, 'Products')
-    if df.empty:
-        df = pd.DataFrame(DEFAULT_PRODUCTS)
-        update_sheet_data(spreadsheet, 'Products', df)
+    df = get_data(spreadsheet, 'Products')
+    if not df.empty:
+        df['rate'] = pd.to_numeric(df['rate'], errors='coerce')
+        df['stock'] = pd.to_numeric(df['stock'], errors='coerce')
     return df
 
-def add_product(spreadsheet, product_data):
-    """Add a new product"""
-    df = get_products(spreadsheet)
-    new_row = pd.DataFrame([product_data])
-    df = pd.concat([df, new_row], ignore_index=True)
-    update_sheet_data(spreadsheet, 'Products', df)
-
-def update_product_stock(spreadsheet, product_name, quantity_change):
+def update_stock(spreadsheet, product_name, quantity_change):
     """Update product stock"""
     df = get_products(spreadsheet)
     if not df.empty:
@@ -167,7 +154,7 @@ def update_product_stock(spreadsheet, product_name, quantity_change):
         if not idx.empty:
             current_stock = float(df.loc[idx[0], 'stock'])
             df.loc[idx[0], 'stock'] = current_stock + quantity_change
-            update_sheet_data(spreadsheet, 'Products', df)
+            update_data(spreadsheet, 'Products', df)
             return True
     return False
 
@@ -175,38 +162,28 @@ def update_product_stock(spreadsheet, product_name, quantity_change):
 
 def get_parties(spreadsheet):
     """Get all parties"""
-    if not spreadsheet:
-        return pd.DataFrame(columns=['id', 'shop_name', 'mobile', 'address', 'opening_balance'])
-    df = get_sheet_data(spreadsheet, 'Parties')
-    if df.empty:
-        df = pd.DataFrame(columns=['id', 'shop_name', 'mobile', 'address', 'opening_balance'])
-        update_sheet_data(spreadsheet, 'Parties', df)
+    df = get_data(spreadsheet, 'Parties')
+    if not df.empty and 'id' in df:
+        df['id'] = pd.to_numeric(df['id'], errors='coerce')
     return df
 
-def add_party(spreadsheet, party_data):
+def add_party(spreadsheet, name, mobile, address, balance):
     """Add a new party"""
     df = get_parties(spreadsheet)
     if df.empty:
         party_id = 1
     else:
-        party_id = max(df['id'].astype(int)) + 1 if 'id' in df else 1
+        party_id = max(df['id'].astype(int)) + 1
     
-    new_row = pd.DataFrame([{
-        'id': party_id,
-        'shop_name': party_data['shop_name'],
-        'mobile': party_data['mobile'],
-        'address': party_data['address'],
-        'opening_balance': party_data['opening_balance']
-    }])
-    
-    df = pd.concat([df, new_row], ignore_index=True)
-    update_sheet_data(spreadsheet, 'Parties', df)
+    new_row = [str(party_id), name, mobile, address, str(balance)]
+    add_row(spreadsheet, 'Parties', new_row)
+    return True
 
 # ==================== INVOICE FUNCTIONS ====================
 
 def get_next_invoice_no(spreadsheet):
     """Generate next invoice number"""
-    df = get_sheet_data(spreadsheet, 'Invoices')
+    df = get_data(spreadsheet, 'Invoices')
     if df.empty:
         return "INV-000001"
     try:
@@ -223,7 +200,8 @@ def create_invoice(spreadsheet, party_id, cart, paid_amount):
         total_amount = sum(item['amount'] for item in cart)
         balance = total_amount - paid_amount
         
-        invoice_data = [
+        # Add to Invoices
+        invoice_row = [
             invoice_no,
             str(party_id),
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -231,22 +209,23 @@ def create_invoice(spreadsheet, party_id, cart, paid_amount):
             str(paid_amount),
             str(max(0, balance))
         ]
+        add_row(spreadsheet, 'Invoices', invoice_row)
         
-        add_row_to_sheet(spreadsheet, 'Invoices', invoice_data)
-        
-        invoices_df = get_sheet_data(spreadsheet, 'Invoices')
+        # Get invoice ID
+        invoices_df = get_data(spreadsheet, 'Invoices')
         invoice_id = len(invoices_df)
         
+        # Add items and update stock
         for item in cart:
-            item_data = [
+            item_row = [
                 str(invoice_id),
                 str(item['product_id']),
                 str(item['quantity']),
                 str(item['rate']),
                 str(item['amount'])
             ]
-            add_row_to_sheet(spreadsheet, 'Invoice_Items', item_data)
-            update_product_stock(spreadsheet, item['name'], -item['quantity'])
+            add_row(spreadsheet, 'Invoice_Items', item_row)
+            update_stock(spreadsheet, item['name'], -item['quantity'])
         
         return invoice_no, total_amount, balance
     
@@ -254,24 +233,263 @@ def create_invoice(spreadsheet, party_id, cart, paid_amount):
         st.error(f"Error creating invoice: {str(e)}")
         return None, None, None
 
-# ==================== PAYMENT FUNCTIONS ====================
+# ==================== RECEIPT GENERATION ====================
 
-def add_payment(spreadsheet, party_id, invoice_id, amount, payment_type, note=""):
-    """Record a payment"""
-    try:
-        payment_data = [
-            str(party_id),
-            str(invoice_id),
-            datetime.now().strftime("%Y-%m-%d"),
-            str(amount),
-            payment_type,
-            note
-        ]
-        add_row_to_sheet(spreadsheet, 'Payments', payment_data)
-        return True
-    except Exception as e:
-        st.error(f"Error recording payment: {str(e)}")
-        return False
+def generate_receipt_html(invoice_no, party_name, party_mobile, party_address, 
+                          items, total, paid, balance, date):
+    """Generate HTML receipt for printing"""
+    
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Receipt - {invoice_no}</title>
+        <style>
+            @media print {{
+                .no-print {{ display: none !important; }}
+                body {{ margin: 0; padding: 20px; }}
+                .receipt {{ box-shadow: none !important; }}
+            }}
+            
+            body {{
+                font-family: 'Courier New', monospace;
+                background: #f5f5f5;
+                display: flex;
+                justify-content: center;
+                padding: 20px;
+            }}
+            
+            .receipt {{
+                background: white;
+                width: 320px;
+                padding: 20px;
+                box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+                border-radius: 8px;
+            }}
+            
+            .header {{
+                text-align: center;
+                border-bottom: 2px dashed #333;
+                padding-bottom: 10px;
+                margin-bottom: 10px;
+            }}
+            
+            .header h1 {{
+                margin: 0;
+                font-size: 24px;
+                font-weight: bold;
+                color: #003366;
+            }}
+            
+            .header p {{
+                margin: 2px 0;
+                font-size: 12px;
+                color: #666;
+            }}
+            
+            .invoice-details {{
+                font-size: 12px;
+                margin-bottom: 10px;
+                padding: 5px 0;
+                border-bottom: 1px dotted #ccc;
+            }}
+            
+            .invoice-details .row {{
+                display: flex;
+                justify-content: space-between;
+                padding: 2px 0;
+            }}
+            
+            .items {{
+                width: 100%;
+                font-size: 12px;
+                border-collapse: collapse;
+                margin: 10px 0;
+            }}
+            
+            .items th {{
+                text-align: left;
+                border-bottom: 1px solid #333;
+                padding: 5px 2px;
+                font-size: 11px;
+            }}
+            
+            .items td {{
+                padding: 4px 2px;
+                border-bottom: 1px dotted #ddd;
+            }}
+            
+            .items .right {{
+                text-align: right;
+            }}
+            
+            .total-section {{
+                margin-top: 10px;
+                padding-top: 10px;
+                border-top: 2px dashed #333;
+            }}
+            
+            .total-row {{
+                display: flex;
+                justify-content: space-between;
+                font-size: 14px;
+                padding: 3px 0;
+            }}
+            
+            .total-row.bold {{
+                font-weight: bold;
+                font-size: 16px;
+            }}
+            
+            .total-row .label {{
+                text-transform: uppercase;
+            }}
+            
+            .footer {{
+                text-align: center;
+                font-size: 11px;
+                color: #666;
+                margin-top: 15px;
+                padding-top: 10px;
+                border-top: 2px dashed #333;
+            }}
+            
+            .footer .thank {{
+                font-size: 14px;
+                font-weight: bold;
+                color: #003366;
+            }}
+            
+            .party-info {{
+                font-size: 12px;
+                margin: 5px 0;
+                padding: 5px;
+                background: #f9f9f9;
+                border-radius: 4px;
+            }}
+            
+            .payment-info {{
+                font-size: 12px;
+                margin: 5px 0;
+            }}
+            
+            .no-print {{
+                text-align: center;
+                margin-top: 20px;
+            }}
+            
+            .no-print button {{
+                padding: 10px 30px;
+                font-size: 16px;
+                background: #003366;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                cursor: pointer;
+                margin: 0 5px;
+            }}
+            
+            .no-print button:hover {{
+                background: #004488;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="receipt" id="receipt">
+            <div class="header">
+                <h1>🧺 Detergent Mart</h1>
+                <p>123 Main Street, City</p>
+                <p>Phone: +91 98765 43210</p>
+                <p>GST: 1234567890</p>
+            </div>
+            
+            <div class="invoice-details">
+                <div class="row">
+                    <span><strong>Invoice:</strong> {invoice_no}</span>
+                    <span><strong>Date:</strong> {date}</span>
+                </div>
+            </div>
+            
+            <div class="party-info">
+                <strong>{party_name}</strong>
+                {f'<br>{party_mobile}' if party_mobile else ''}
+                {f'<br>{party_address}' if party_address else ''}
+            </div>
+            
+            <table class="items">
+                <thead>
+                    <tr>
+                        <th>Item</th>
+                        <th class="right">Qty</th>
+                        <th class="right">Rate</th>
+                        <th class="right">Amount</th>
+                    </tr>
+                </thead>
+                <tbody>
+    """
+    
+    for item in items:
+        html += f"""
+                    <tr>
+                        <td>{item['name']}</td>
+                        <td class="right">{item['quantity']}</td>
+                        <td class="right">₹{item['rate']:.2f}</td>
+                        <td class="right">₹{item['amount']:.2f}</td>
+                    </tr>
+        """
+    
+    html += f"""
+                </tbody>
+            </table>
+            
+            <div class="total-section">
+                <div class="total-row">
+                    <span class="label">Total Amount</span>
+                    <span>₹{total:.2f}</span>
+                </div>
+                <div class="total-row">
+                    <span class="label">Amount Paid</span>
+                    <span>₹{paid:.2f}</span>
+                </div>
+                <div class="total-row bold">
+                    <span class="label">Balance</span>
+                    <span>₹{balance:.2f}</span>
+                </div>
+            </div>
+            
+            <div class="payment-info">
+                <div class="row">
+                    <span>Payment Mode: Cash/UPI</span>
+                    <span>Status: {'Paid' if balance <= 0 else 'Due'}</span>
+                </div>
+            </div>
+            
+            <div class="footer">
+                <div class="thank">Thank You!</div>
+                <p>Visit Again | Items once sold cannot be returned</p>
+                <p>This is a system generated receipt</p>
+            </div>
+        </div>
+        
+        <div class="no-print">
+            <button onclick="window.print()">🖨️ Print Receipt</button>
+            <button onclick="window.close()">Close</button>
+        </div>
+        
+        <script>
+            // Auto-print when page loads
+            window.onload = function() {{
+                // Comment out the line below if you don't want auto-print
+                // window.print();
+            }};
+        </script>
+    </body>
+    </html>
+    """
+    
+    return html
 
 # ==================== MAIN APPLICATION ====================
 
@@ -282,20 +500,15 @@ def main():
     st.sidebar.title("📋 Menu")
     st.sidebar.markdown("---")
     
-    # Show Plotly status
-    if not PLOTLY_AVAILABLE:
-        st.sidebar.warning("⚠️ Charts disabled - Plotly not installed")
-    
-    # Connect to Google Sheets using Secrets
+    # Connect to Google Sheets
     client = get_google_sheets_client()
     spreadsheet = None
     
     if client:
         spreadsheet = get_spreadsheet(client)
         if spreadsheet:
-            if initialize_sheets(spreadsheet):
+            if init_sheets(spreadsheet):
                 st.sidebar.success("✅ Connected to Google Sheets")
-                st.sidebar.info(f"📊 Sheet: {spreadsheet.title}")
     
     if not spreadsheet:
         st.sidebar.warning("⚠️ Offline Mode - Using local data")
@@ -310,7 +523,7 @@ def main():
     st.sidebar.markdown("---")
     st.sidebar.info("Made with ❤️ using Streamlit")
     
-    # Initialize session state for cart
+    # Initialize cart
     if 'cart' not in st.session_state:
         st.session_state.cart = []
 
@@ -318,139 +531,96 @@ def main():
     if menu == "📊 Dashboard":
         st.header("📊 Dashboard")
         
-        products = get_products(spreadsheet) if spreadsheet else pd.DataFrame(DEFAULT_PRODUCTS)
-        invoices = get_sheet_data(spreadsheet, 'Invoices') if spreadsheet else pd.DataFrame()
+        products = get_products(spreadsheet) if spreadsheet else pd.DataFrame()
+        invoices = get_data(spreadsheet, 'Invoices') if spreadsheet else pd.DataFrame()
         
         col1, col2, col3, col4 = st.columns(4)
         
+        # Today's Sales
         today = datetime.now().strftime("%Y-%m-%d")
-        if not invoices.empty and 'date' in invoices:
+        if not invoices.empty:
             today_invoices = invoices[invoices['date'].str.startswith(today)]
             today_sales = today_invoices['total_amount'].astype(float).sum() if not today_invoices.empty else 0
         else:
             today_sales = 0
         col1.metric("Today's Sales", f"₹{today_sales:,.2f}")
         
-        if not invoices.empty and 'balance' in invoices:
+        # Outstanding
+        if not invoices.empty:
             outstanding = invoices['balance'].astype(float).sum()
         else:
             outstanding = 0
         col2.metric("Outstanding", f"₹{outstanding:,.2f}", delta="Due" if outstanding > 0 else "Settled")
         
+        # Low Stock
         if not products.empty:
-            low_stock = len(products[products['stock'].astype(float) < 10])
+            low_stock = len(products[products['stock'] < 10])
         else:
             low_stock = 0
-        col3.metric("Low Stock Items", low_stock, delta="Need to reorder" if low_stock > 0 else "Stock OK")
+        col3.metric("Low Stock Items", low_stock)
         
+        # Total Products
         col4.metric("Total Products", len(products))
         
-        st.markdown("---")
-        
-        # Charts - only if plotly is available
-        if PLOTLY_AVAILABLE:
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.subheader("📈 Last 7 Days Sales")
-                if not invoices.empty and 'date' in invoices:
-                    dates = [(datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(6, -1, -1)]
-                    daily_sales = []
-                    for date in dates:
-                        day_sales = invoices[invoices['date'].str.startswith(date)]
-                        daily_sales.append(day_sales['total_amount'].astype(float).sum() if not day_sales.empty else 0)
-                    
-                    fig = px.line(x=dates, y=daily_sales, labels={'x': 'Date', 'y': 'Sales Amount'})
-                    fig.update_layout(showlegend=False, height=300)
-                    st.plotly_chart(fig, use_container_width=True)
-                else:
-                    st.info("No sales data available")
-            
-            with col2:
-                st.subheader("🏷️ Product Stock Status")
-                if not products.empty:
-                    fig = px.bar(products, x='name', y='stock', 
-                               color='stock', 
-                               color_continuous_scale=['red', 'yellow', 'green'],
-                               labels={'x': 'Product', 'y': 'Stock'})
-                    fig.update_layout(height=300)
-                    st.plotly_chart(fig, use_container_width=True)
-                else:
-                    st.info("No products available")
+        # Recent Invoices
+        st.subheader("📄 Recent Invoices")
+        if not invoices.empty:
+            recent = invoices.tail(10)[['invoice_no', 'date', 'total_amount', 'paid_amount', 'balance']]
+            st.dataframe(recent, use_container_width=True, hide_index=True)
         else:
-            st.info("📊 Charts are disabled. Install plotly to see visualizations.")
+            st.info("No invoices yet")
 
     # ==================== PRODUCTS ====================
     elif menu == "📦 Products":
         st.header("📦 Product Master")
         
-        tab1, tab2 = st.tabs(["Manage Products", "Add New Product"])
+        tab1, tab2 = st.tabs(["Manage Products", "Add Product"])
         
         with tab1:
-            products = get_products(spreadsheet) if spreadsheet else pd.DataFrame(DEFAULT_PRODUCTS)
+            products = get_products(spreadsheet) if spreadsheet else pd.DataFrame()
             if not products.empty:
                 st.dataframe(products, use_container_width=True, hide_index=True)
                 
-                st.subheader("Quick Stock Update")
+                st.subheader("Update Stock")
                 col1, col2, col3 = st.columns([2, 1, 1])
                 with col1:
-                    product_to_update = st.selectbox("Select Product", products['name'].tolist())
+                    product = st.selectbox("Select Product", products['name'].tolist())
                 with col2:
-                    stock_change = st.number_input("Add/Deduct Stock", value=0.0, step=1.0)
+                    change = st.number_input("Quantity Change", value=0.0, step=1.0)
                 with col3:
-                    if st.button("Update Stock"):
-                        if stock_change != 0 and spreadsheet:
-                            if update_product_stock(spreadsheet, product_to_update, stock_change):
-                                st.success(f"Stock updated! Change: {stock_change}")
+                    if st.button("Update"):
+                        if change != 0 and spreadsheet:
+                            if update_stock(spreadsheet, product, change):
+                                st.success(f"Stock updated! {product}: {change}")
                                 st.rerun()
             else:
-                st.info("No products added yet.")
-        
-        with tab2:
-            with st.form("add_product_form"):
-                col1, col2 = st.columns(2)
-                with col1:
-                    name = st.text_input("Product Name *")
-                    rate = st.number_input("Rate (₹) *", min_value=0.0, step=1.0)
-                with col2:
-                    stock = st.number_input("Stock Quantity *", min_value=0.0, step=1.0)
-                    brand = st.text_input("Brand", "Detergent")
-                    unit = st.selectbox("Unit", ["Pcs", "Pack", "Kg", "Ltr"])
-                
-                submitted = st.form_submit_button("Add Product")
-                if submitted and name and rate > 0 and spreadsheet:
-                    add_product(spreadsheet, {'name': name, 'rate': rate, 'stock': stock, 'brand': brand, 'unit': unit})
-                    st.success(f"Product '{name}' added successfully!")
-                    st.rerun()
+                st.info("No products available")
 
     # ==================== PARTIES ====================
     elif menu == "🏪 Parties":
         st.header("🏪 Party Master")
         
-        tab1, tab2 = st.tabs(["Manage Parties", "Add New Party"])
+        tab1, tab2 = st.tabs(["Manage Parties", "Add Party"])
         
         with tab1:
             parties = get_parties(spreadsheet) if spreadsheet else pd.DataFrame()
             if not parties.empty:
                 st.dataframe(parties, use_container_width=True, hide_index=True)
             else:
-                st.info("No parties added yet.")
+                st.info("No parties added yet")
         
         with tab2:
-            with st.form("add_party_form"):
-                col1, col2 = st.columns(2)
-                with col1:
-                    shop_name = st.text_input("Shop Name *")
-                    mobile = st.text_input("Mobile Number")
-                with col2:
-                    address = st.text_area("Address")
-                    opening_balance = st.number_input("Opening Balance (₹)", min_value=0.0, step=100.0)
+            with st.form("add_party"):
+                name = st.text_input("Shop Name *")
+                mobile = st.text_input("Mobile Number")
+                address = st.text_area("Address")
+                balance = st.number_input("Opening Balance (₹)", min_value=0.0, step=100.0)
                 
-                submitted = st.form_submit_button("Add Party")
-                if submitted and shop_name and spreadsheet:
-                    add_party(spreadsheet, {'shop_name': shop_name, 'mobile': mobile, 'address': address, 'opening_balance': opening_balance})
-                    st.success(f"Party '{shop_name}' added successfully!")
-                    st.rerun()
+                if st.form_submit_button("Add Party"):
+                    if name and spreadsheet:
+                        if add_party(spreadsheet, name, mobile, address, balance):
+                            st.success(f"Party '{name}' added!")
+                            st.rerun()
 
     # ==================== SALES BILLING ====================
     elif menu == "🧾 Sales Billing":
@@ -463,36 +633,33 @@ def main():
         col1, col2 = st.columns([2, 1])
         
         with col1:
-            st.subheader("Add Items to Cart")
+            st.subheader("Add Items")
             products = get_products(spreadsheet)
             
             if products.empty:
                 st.warning("No products available!")
             else:
                 product_names = products['name'].tolist()
-                selected_product = st.selectbox("Select Product", product_names)
+                selected = st.selectbox("Select Product", product_names)
                 
-                if selected_product:
-                    product_data = products[products['name'] == selected_product].iloc[0]
-                    stock = float(product_data['stock'])
-                    rate = float(product_data['rate'])
+                if selected:
+                    product = products[products['name'] == selected].iloc[0]
+                    stock = float(product['stock'])
+                    rate = float(product['rate'])
                     st.info(f"📦 Stock: {stock} | Rate: ₹{rate:,.2f}")
                     
-                    col_qty, col_add = st.columns([2, 1])
-                    with col_qty:
-                        quantity = st.number_input("Quantity", min_value=0.0, max_value=stock, step=1.0)
-                    with col_add:
-                        if st.button("➕ Add to Cart"):
-                            if quantity > 0:
-                                st.session_state.cart.append({
-                                    'product_id': len(products),
-                                    'name': selected_product,
-                                    'rate': rate,
-                                    'quantity': quantity,
-                                    'amount': rate * quantity
-                                })
-                                st.success(f"Added {quantity} {selected_product}")
-                                st.rerun()
+                    qty = st.number_input("Quantity", min_value=0.0, max_value=stock, step=1.0)
+                    if st.button("➕ Add to Cart"):
+                        if qty > 0:
+                            st.session_state.cart.append({
+                                'product_id': len(products),
+                                'name': selected,
+                                'rate': rate,
+                                'quantity': qty,
+                                'amount': rate * qty
+                            })
+                            st.success(f"Added {qty} {selected}")
+                            st.rerun()
         
         with col2:
             st.subheader("Cart")
@@ -516,31 +683,45 @@ def main():
         else:
             col1, col2, col3 = st.columns(3)
             with col1:
-                party_name = st.selectbox("Select Party", parties['shop_name'].tolist())
+                party_name = st.selectbox("Party", parties['shop_name'].tolist())
             with col2:
-                paid_amount = st.number_input("Paid Amount (₹)", min_value=0.0, step=100.0)
+                paid = st.number_input("Paid Amount (₹)", min_value=0.0, step=100.0)
             with col3:
-                if st.button("💳 Generate Invoice", type="primary"):
+                if st.button("💳 Generate Invoice & Receipt", type="primary"):
                     if not st.session_state.cart:
                         st.error("Cart is empty!")
                     else:
-                        party_id = int(parties[parties['shop_name'] == party_name].iloc[0]['id'])
-                        invoice_no, total, balance = create_invoice(spreadsheet, party_id, st.session_state.cart, paid_amount)
+                        party = parties[parties['shop_name'] == party_name].iloc[0]
+                        party_id = int(party['id'])
+                        
+                        invoice_no, total, balance = create_invoice(
+                            spreadsheet, party_id, st.session_state.cart, paid
+                        )
+                        
                         if invoice_no:
                             st.success(f"Invoice {invoice_no} generated!")
                             
-                            with st.expander("📄 Invoice Preview"):
-                                st.write(f"**Invoice No:** {invoice_no}")
-                                st.write(f"**Party:** {party_name}")
-                                st.write(f"**Date:** {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-                                st.write("---")
-                                items_df = pd.DataFrame(st.session_state.cart)
-                                st.dataframe(items_df[['name', 'quantity', 'rate', 'amount']], use_container_width=True)
-                                st.write("---")
-                                st.write(f"**Total:** ₹{total:,.2f}")
-                                st.write(f"**Paid:** ₹{paid_amount:,.2f}")
-                                st.write(f"**Balance:** ₹{max(0, balance):,.2f}")
+                            # Show receipt
+                            st.markdown("---")
+                            st.subheader("🧾 Receipt")
                             
+                            # Generate receipt HTML
+                            receipt_html = generate_receipt_html(
+                                invoice_no,
+                                party_name,
+                                party.get('mobile', ''),
+                                party.get('address', ''),
+                                st.session_state.cart,
+                                total,
+                                paid,
+                                balance,
+                                datetime.now().strftime("%d-%m-%Y %H:%M")
+                            )
+                            
+                            # Display receipt
+                            st.components.v1.html(receipt_html, height=700)
+                            
+                            # Clear cart
                             st.session_state.cart = []
 
     # ==================== PARTY LEDGER ====================
@@ -553,41 +734,33 @@ def main():
         
         parties = get_parties(spreadsheet)
         if not parties.empty:
-            selected_party = st.selectbox("Select Party", parties['shop_name'].tolist())
+            selected = st.selectbox("Select Party", parties['shop_name'].tolist())
             
-            if selected_party:
-                parties_df = get_parties(spreadsheet)
-                party = parties_df[parties_df['shop_name'] == selected_party]
-                if not party.empty:
-                    party_id = int(party.iloc[0]['id'])
-                    
-                    invoices_df = get_sheet_data(spreadsheet, 'Invoices')
-                    party_invoices = invoices_df[invoices_df['party_id'].astype(str) == str(party_id)]
-                    
-                    payments_df = get_sheet_data(spreadsheet, 'Payments')
-                    party_payments = payments_df[payments_df['party_id'].astype(str) == str(party_id)]
-                    
-                    st.subheader(f"Statement for {selected_party}")
-                    
-                    if not party_invoices.empty:
-                        st.write("**Invoices**")
-                        st.dataframe(party_invoices[['invoice_no', 'date', 'total_amount', 'paid_amount', 'balance']], 
-                                   use_container_width=True, hide_index=True)
-                    
-                    if not party_payments.empty:
-                        st.write("**Payments**")
-                        st.dataframe(party_payments[['date', 'amount', 'payment_type', 'note']], 
-                                   use_container_width=True, hide_index=True)
-                    
-                    col1, col2, col3 = st.columns(3)
-                    total_sales = party_invoices['total_amount'].astype(float).sum() if not party_invoices.empty else 0
-                    total_paid = party_payments['amount'].astype(float).sum() if not party_payments.empty else 0
-                    total_balance = total_sales - total_paid
-                    
-                    col1.metric("Total Sales", f"₹{total_sales:,.2f}")
-                    col2.metric("Total Paid", f"₹{total_paid:,.2f}")
-                    col3.metric("Outstanding", f"₹{total_balance:,.2f}", 
-                              delta="Due" if total_balance > 0 else "Settled")
+            if selected:
+                party = parties[parties['shop_name'] == selected]
+                party_id = int(party.iloc[0]['id'])
+                
+                invoices = get_data(spreadsheet, 'Invoices')
+                party_invoices = invoices[invoices['party_id'].astype(str) == str(party_id)]
+                
+                payments = get_data(spreadsheet, 'Payments')
+                party_payments = payments[payments['party_id'].astype(str) == str(party_id)]
+                
+                st.subheader(f"Statement for {selected}")
+                
+                col1, col2, col3 = st.columns(3)
+                total_sales = party_invoices['total_amount'].astype(float).sum() if not party_invoices.empty else 0
+                total_paid = party_payments['amount'].astype(float).sum() if not party_payments.empty else 0
+                balance = total_sales - total_paid
+                
+                col1.metric("Total Sales", f"₹{total_sales:,.2f}")
+                col2.metric("Total Paid", f"₹{total_paid:,.2f}")
+                col3.metric("Balance", f"₹{balance:,.2f}", delta="Due" if balance > 0 else "Settled")
+                
+                if not party_invoices.empty:
+                    st.write("**Invoices**")
+                    st.dataframe(party_invoices[['invoice_no', 'date', 'total_amount', 'paid_amount', 'balance']], 
+                               use_container_width=True, hide_index=True)
 
     # ==================== PAYMENT ENTRY ====================
     elif menu == "💵 Payment Entry":
@@ -599,12 +772,12 @@ def main():
         
         parties = get_parties(spreadsheet)
         if not parties.empty:
-            party_name = st.selectbox("Select Party", parties['shop_name'].tolist())
+            party = st.selectbox("Select Party", parties['shop_name'].tolist())
             
-            if party_name:
-                party_id = int(parties[parties['shop_name'] == party_name].iloc[0]['id'])
-                invoices_df = get_sheet_data(spreadsheet, 'Invoices')
-                party_invoices = invoices_df[invoices_df['party_id'].astype(str) == str(party_id)]
+            if party:
+                party_id = int(parties[parties['shop_name'] == party].iloc[0]['id'])
+                invoices = get_data(spreadsheet, 'Invoices')
+                party_invoices = invoices[invoices['party_id'].astype(str) == str(party_id)]
                 party_invoices = party_invoices[party_invoices['balance'].astype(float) > 0]
                 
                 if not party_invoices.empty:
@@ -616,20 +789,24 @@ def main():
                         invoice = party_invoices[party_invoices['invoice_no'] == invoice_no].iloc[0]
                         st.info(f"Outstanding: ₹{float(invoice['balance']):,.2f}")
                         
-                        with st.form("payment_form"):
-                            amount = st.number_input("Payment Amount", min_value=0.0, 
-                                                    max_value=float(invoice['balance']), step=100.0)
+                        with st.form("payment"):
+                            amount = st.number_input("Amount", min_value=0.0, max_value=float(invoice['balance']), step=100.0)
                             payment_type = st.selectbox("Payment Type", ["Cash", "UPI", "Bank Transfer", "Cheque"])
-                            note = st.text_area("Note (Optional)")
+                            note = st.text_area("Note")
                             
                             if st.form_submit_button("Record Payment"):
                                 if amount > 0:
-                                    invoice_id = int(party_invoices[party_invoices['invoice_no'] == invoice_no].index[0]) + 1
-                                    if add_payment(spreadsheet, party_id, invoice_id, amount, payment_type, note):
-                                        st.success(f"Payment of ₹{amount:,.2f} recorded!")
-                                        st.rerun()
-                else:
-                    st.info("No outstanding invoices for this party")
+                                    payment_row = [
+                                        str(party_id),
+                                        str(party_invoices[party_invoices['invoice_no'] == invoice_no].index[0] + 1),
+                                        datetime.now().strftime("%Y-%m-%d"),
+                                        str(amount),
+                                        payment_type,
+                                        note
+                                    ]
+                                    add_row(spreadsheet, 'Payments', payment_row)
+                                    st.success(f"Payment of ₹{amount:,.2f} recorded!")
+                                    st.rerun()
 
     # ==================== REPORTS ====================
     elif menu == "📈 Reports":
@@ -640,109 +817,39 @@ def main():
             st.stop()
         
         report_type = st.selectbox("Select Report", 
-                                  ["Daily Sales", "Monthly Sales", "Product-wise Sales", 
-                                   "Party-wise Sales", "Outstanding Report"])
+                                  ["Daily Sales", "Outstanding Report", "Party-wise Sales"])
         
         if report_type == "Daily Sales":
             date = st.date_input("Select Date", datetime.now())
             date_str = date.strftime("%Y-%m-%d")
-            invoices_df = get_sheet_data(spreadsheet, 'Invoices')
-            daily_invoices = invoices_df[invoices_df['date'].str.startswith(date_str)]
+            invoices = get_data(spreadsheet, 'Invoices')
+            daily = invoices[invoices['date'].str.startswith(date_str)]
             
-            if not daily_invoices.empty:
-                st.dataframe(daily_invoices, use_container_width=True, hide_index=True)
-                st.metric("Total Sales", f"₹{daily_invoices['total_amount'].astype(float).sum():,.2f}")
+            if not daily.empty:
+                st.dataframe(daily[['invoice_no', 'total_amount', 'paid_amount', 'balance']], 
+                           use_container_width=True, hide_index=True)
+                st.metric("Total Sales", f"₹{daily['total_amount'].astype(float).sum():,.2f}")
             else:
                 st.info("No sales for this date")
-        
-        elif report_type == "Monthly Sales":
-            month = st.selectbox("Select Month", range(1, 13), 
-                               format_func=lambda x: datetime(2024, x, 1).strftime("%B"))
-            year = st.number_input("Year", min_value=2020, max_value=2030, value=datetime.now().year)
-            
-            month_str = f"{year}-{month:02d}"
-            invoices_df = get_sheet_data(spreadsheet, 'Invoices')
-            monthly_invoices = invoices_df[invoices_df['date'].str.startswith(month_str)]
-            
-            if not monthly_invoices.empty:
-                st.dataframe(monthly_invoices, use_container_width=True, hide_index=True)
-                st.metric("Total Sales", f"₹{monthly_invoices['total_amount'].astype(float).sum():,.2f}")
-            else:
-                st.info("No sales for this month")
-        
-        elif report_type == "Product-wise Sales":
-            if PLOTLY_AVAILABLE:
-                items_df = get_sheet_data(spreadsheet, 'Invoice_Items')
-                products_df = get_products(spreadsheet)
-                
-                if not items_df.empty and not products_df.empty:
-                    product_sales = items_df.groupby('product_id')['amount'].sum().reset_index()
-                    product_sales = product_sales.merge(products_df, left_on='product_id', right_index=True, how='left')
-                    st.dataframe(product_sales[['name', 'amount']], use_container_width=True, hide_index=True)
-                    
-                    fig = px.pie(product_sales, values='amount', names='name', title='Product-wise Sales Distribution')
-                    st.plotly_chart(fig, use_container_width=True)
-                else:
-                    st.info("No sales data available")
-            else:
-                st.info("📊 Install plotly to see product-wise sales chart")
-        
-        elif report_type == "Party-wise Sales":
-            if PLOTLY_AVAILABLE:
-                invoices_df = get_sheet_data(spreadsheet, 'Invoices')
-                parties_df = get_parties(spreadsheet)
-                
-                if not invoices_df.empty and not parties_df.empty:
-                    party_sales = invoices_df.groupby('party_id')['total_amount'].sum().reset_index()
-                    party_sales = party_sales.merge(parties_df, left_on='party_id', right_on='id', how='left')
-                    st.dataframe(party_sales[['shop_name', 'total_amount']], use_container_width=True, hide_index=True)
-                    
-                    fig = px.bar(party_sales, x='shop_name', y='total_amount', title='Party-wise Sales')
-                    st.plotly_chart(fig, use_container_width=True)
-                else:
-                    st.info("No data available")
-            else:
-                st.info("📊 Install plotly to see party-wise sales chart")
-        
-        elif report_type == "Outstanding Report":
-            invoices_df = get_sheet_data(spreadsheet, 'Invoices')
-            outstanding = invoices_df[invoices_df['balance'].astype(float) > 0]
-            
-            if not outstanding.empty:
-                parties_df = get_parties(spreadsheet)
-                outstanding = outstanding.merge(parties_df, left_on='party_id', right_on='id', how='left')
-                st.dataframe(outstanding[['invoice_no', 'shop_name', 'total_amount', 'paid_amount', 'balance']], 
-                           use_container_width=True, hide_index=True)
-                st.metric("Total Outstanding", f"₹{outstanding['balance'].astype(float).sum():,.2f}")
-            else:
-                st.info("No outstanding dues")
 
     # ==================== SETTINGS ====================
     elif menu == "⚙️ Settings":
         st.header("⚙️ Settings")
         
-        st.subheader("🔐 Google Sheets Connection Status")
+        st.subheader("🔐 Connection Status")
         if spreadsheet:
-            st.success("✅ Connected to Google Sheets using Streamlit Secrets")
+            st.success("✅ Connected to Google Sheets")
             st.info(f"📊 Spreadsheet: {spreadsheet.title}")
-            st.info(f"🔑 Service Account: detergent-billing@detergent-billing.iam.gserviceaccount.com")
+            st.info("🔑 Service Account: detergent-billing@detergent-billing.iam.gserviceaccount.com")
         else:
-            st.error("❌ Not connected to Google Sheets")
+            st.error("❌ Not connected")
         
-        st.subheader("📦 Default Products")
-        st.dataframe(pd.DataFrame(DEFAULT_PRODUCTS), use_container_width=True, hide_index=True)
-        
-        st.subheader("🔑 Streamlit Secrets Configuration")
-        with st.expander("📝 Your Secrets are Configured"):
-            st.success("✅ Secrets found in `.streamlit/secrets.toml`")
-            st.info("""
-            **Your configuration:**
-            - Project ID: detergent-billing
-            - Service Account: detergent-billing@detergent-billing.iam.gserviceaccount.com
-            - Spreadsheet ID: 1jaat8u_k7rQyqhPcdL4zmUkkuG8gpwwk6z-Tvv2SMrQ
-            """)
+        st.subheader("📦 Products")
+        products = get_products(spreadsheet) if spreadsheet else pd.DataFrame()
+        if not products.empty:
+            st.dataframe(products, use_container_width=True, hide_index=True)
 
-# ==================== RUN APPLICATION ====================
+# ==================== RUN ====================
 
 if __name__ == "__main__":
     main()
