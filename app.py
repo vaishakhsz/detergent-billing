@@ -1,9 +1,4 @@
-"""
-Detergent Billing Software - Streamlit Version
-Products: Dishwash Liquid 1L (₹120), Detergent Powder 1kg (₹120), 
-         Dishwash Liquid 7+1 (₹840), Detergent Powder 7+1 (₹840)
-Google Sheets Database with Streamlit Secrets
-"""
+
 
 import streamlit as st
 import pandas as pd
