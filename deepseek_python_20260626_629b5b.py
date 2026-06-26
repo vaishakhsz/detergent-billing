@@ -3,7 +3,6 @@ Detergent Billing Software - Streamlit Version
 Products: Dishwash Liquid 1L (₹120), Detergent Powder 1kg (₹120), 
          Dishwash Liquid 7+1 (₹840), Detergent Powder 7+1 (₹840)
 Google Sheets Database with Streamlit Secrets
-No GST - Simple billing system
 """
 
 import streamlit as st
@@ -646,7 +645,6 @@ def main():
                                         new_paid = float(invoice['paid_amount']) + amount
                                         new_balance = float(invoice['total_amount']) - new_paid
                                         
-                                        # Update in sheet (simplified - would need to update specific cell)
                                         st.success(f"Payment of ₹{amount:,.2f} recorded!")
                                         st.rerun()
                 else:
@@ -750,24 +748,7 @@ def main():
         st.subheader("📦 Default Products")
         st.dataframe(pd.DataFrame(DEFAULT_PRODUCTS), use_container_width=True, hide_index=True)
         
-        st.subheader("🔑 Streamlit Secrets Configuration")
-        with st.expander("📝 Your Secrets are Configured"):
-            st.success("✅ Secrets found in `.streamlit/secrets.toml`")
-            st.info("""
-            **Your configuration:**
-            - Project ID: detergent-billing
-            - Service Account: detergent-billing@detergent-billing.iam.gserviceaccount.com
-            - Spreadsheet ID: 1jaat8u_k7rQyqhPcdL4zmUkkuG8gpwwk6z-Tvv2SMrQ
-            """)
-        
-        st.subheader("💡 How to Deploy to Streamlit Cloud")
-        st.markdown("""
-        1. Push your code to GitHub
-        2. Go to [Streamlit Cloud](https://share.streamlit.io/)
-        3. Click "New app" and connect your repo
-        4. In app settings, add the secrets from `.streamlit/secrets.toml`
-        5. Deploy!
-        """)
+
 
 # ==================== RUN APPLICATION ====================
 
