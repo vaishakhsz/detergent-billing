@@ -1,10 +1,23 @@
-
+"""
+Detergent Billing Software - Streamlit Version
+Products: Dishwash Liquid 1L (₹120), Detergent Powder 1kg (₹120), 
+         Dishwash Liquid 7+1 (₹840), Detergent Powder 7+1 (₹840)
+Google Sheets Database with Streamlit Secrets
+"""
 
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
-import plotly.express as px
-import plotly.graph_objects as go
+
+# Try to import plotly, but provide fallback if not available
+try:
+    import plotly.express as px
+    import plotly.graph_objects as go
+    PLOTLY_AVAILABLE = True
+except ImportError:
+    PLOTLY_AVAILABLE = False
+    st.warning("⚠️ Plotly not installed. Charts will be disabled.")
+
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import inch
@@ -36,42 +49,27 @@ DEFAULT_PRODUCTS = [
 def get_google_sheets_client():
     """Authenticate using Streamlit Secrets"""
     try:
-        # Check if secrets exist
         if 'google_sheets' not in st.secrets:
             st.error("❌ Google Sheets credentials not found in secrets!")
-            st.info("""
-            Please set up your secrets:
-            1. Create `.streamlit/secrets.toml` file
-            2. Add your Google Sheets credentials
-            3. Or set up in Streamlit Cloud dashboard
-            """)
             return None
         
-        # Get credentials from secrets
         creds_dict = dict(st.secrets['google_sheets'])
-        
-        # Define scope
         scope = [
             'https://spreadsheets.google.com/feeds',
             'https://www.googleapis.com/auth/drive'
         ]
-        
-        # Create credentials
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
-        
         st.sidebar.success("✅ Connected to Google Sheets")
         return client
         
     except Exception as e:
         st.error(f"❌ Authentication error: {str(e)}")
-        st.info("Make sure your secrets.toml has the correct format")
         return None
 
 def get_spreadsheet(client):
     """Get the spreadsheet"""
     try:
-        # Your spreadsheet ID from the URL
         sheet_id = "1jaat8u_k7rQyqhPcdL4zmUkkuG8gpwwk6z-Tvv2SMrQ"
         spreadsheet = client.open_by_key(sheet_id)
         return spreadsheet
@@ -95,7 +93,6 @@ def initialize_sheets(spreadsheet):
                 spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=20)
                 st.info(f"📝 Created sheet: {sheet_name}")
         
-        # Initialize Products with default data if empty
         products_df = get_sheet_data(spreadsheet, 'Products')
         if products_df.empty:
             df = pd.DataFrame(DEFAULT_PRODUCTS)
@@ -226,7 +223,6 @@ def create_invoice(spreadsheet, party_id, cart, paid_amount):
         total_amount = sum(item['amount'] for item in cart)
         balance = total_amount - paid_amount
         
-        # Add to Invoices sheet
         invoice_data = [
             invoice_no,
             str(party_id),
@@ -238,11 +234,9 @@ def create_invoice(spreadsheet, party_id, cart, paid_amount):
         
         add_row_to_sheet(spreadsheet, 'Invoices', invoice_data)
         
-        # Get invoice ID (row number)
         invoices_df = get_sheet_data(spreadsheet, 'Invoices')
         invoice_id = len(invoices_df)
         
-        # Add invoice items and update stock
         for item in cart:
             item_data = [
                 str(invoice_id),
@@ -252,8 +246,6 @@ def create_invoice(spreadsheet, party_id, cart, paid_amount):
                 str(item['amount'])
             ]
             add_row_to_sheet(spreadsheet, 'Invoice_Items', item_data)
-            
-            # Update stock
             update_product_stock(spreadsheet, item['name'], -item['quantity'])
         
         return invoice_no, total_amount, balance
@@ -290,6 +282,10 @@ def main():
     st.sidebar.title("📋 Menu")
     st.sidebar.markdown("---")
     
+    # Show Plotly status
+    if not PLOTLY_AVAILABLE:
+        st.sidebar.warning("⚠️ Charts disabled - Plotly not installed")
+    
     # Connect to Google Sheets using Secrets
     client = get_google_sheets_client()
     spreadsheet = None
@@ -300,7 +296,6 @@ def main():
             if initialize_sheets(spreadsheet):
                 st.sidebar.success("✅ Connected to Google Sheets")
                 st.sidebar.info(f"📊 Sheet: {spreadsheet.title}")
-                st.sidebar.info("🔑 Using Streamlit Secrets")
     
     if not spreadsheet:
         st.sidebar.warning("⚠️ Offline Mode - Using local data")
@@ -328,7 +323,6 @@ def main():
         
         col1, col2, col3, col4 = st.columns(4)
         
-        # Today's Sales
         today = datetime.now().strftime("%Y-%m-%d")
         if not invoices.empty and 'date' in invoices:
             today_invoices = invoices[invoices['date'].str.startswith(today)]
@@ -337,14 +331,12 @@ def main():
             today_sales = 0
         col1.metric("Today's Sales", f"₹{today_sales:,.2f}")
         
-        # Outstanding
         if not invoices.empty and 'balance' in invoices:
             outstanding = invoices['balance'].astype(float).sum()
         else:
             outstanding = 0
         col2.metric("Outstanding", f"₹{outstanding:,.2f}", delta="Due" if outstanding > 0 else "Settled")
         
-        # Low Stock
         if not products.empty:
             low_stock = len(products[products['stock'].astype(float) < 10])
         else:
@@ -355,34 +347,38 @@ def main():
         
         st.markdown("---")
         
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("📈 Last 7 Days Sales")
-            if not invoices.empty and 'date' in invoices:
-                dates = [(datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(6, -1, -1)]
-                daily_sales = []
-                for date in dates:
-                    day_sales = invoices[invoices['date'].str.startswith(date)]
-                    daily_sales.append(day_sales['total_amount'].astype(float).sum() if not day_sales.empty else 0)
-                
-                fig = px.line(x=dates, y=daily_sales, labels={'x': 'Date', 'y': 'Sales Amount'})
-                fig.update_layout(showlegend=False, height=300)
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("No sales data available")
-        
-        with col2:
-            st.subheader("🏷️ Product Stock Status")
-            if not products.empty:
-                fig = px.bar(products, x='name', y='stock', 
-                           color='stock', 
-                           color_continuous_scale=['red', 'yellow', 'green'],
-                           labels={'x': 'Product', 'y': 'Stock'})
-                fig.update_layout(height=300)
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("No products available")
+        # Charts - only if plotly is available
+        if PLOTLY_AVAILABLE:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader("📈 Last 7 Days Sales")
+                if not invoices.empty and 'date' in invoices:
+                    dates = [(datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(6, -1, -1)]
+                    daily_sales = []
+                    for date in dates:
+                        day_sales = invoices[invoices['date'].str.startswith(date)]
+                        daily_sales.append(day_sales['total_amount'].astype(float).sum() if not day_sales.empty else 0)
+                    
+                    fig = px.line(x=dates, y=daily_sales, labels={'x': 'Date', 'y': 'Sales Amount'})
+                    fig.update_layout(showlegend=False, height=300)
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("No sales data available")
+            
+            with col2:
+                st.subheader("🏷️ Product Stock Status")
+                if not products.empty:
+                    fig = px.bar(products, x='name', y='stock', 
+                               color='stock', 
+                               color_continuous_scale=['red', 'yellow', 'green'],
+                               labels={'x': 'Product', 'y': 'Stock'})
+                    fig.update_layout(height=300)
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("No products available")
+        else:
+            st.info("📊 Charts are disabled. Install plotly to see visualizations.")
 
     # ==================== PRODUCTS ====================
     elif menu == "📦 Products":
@@ -533,7 +529,6 @@ def main():
                         if invoice_no:
                             st.success(f"Invoice {invoice_no} generated!")
                             
-                            # Show invoice preview
                             with st.expander("📄 Invoice Preview"):
                                 st.write(f"**Invoice No:** {invoice_no}")
                                 st.write(f"**Party:** {party_name}")
@@ -566,29 +561,24 @@ def main():
                 if not party.empty:
                     party_id = int(party.iloc[0]['id'])
                     
-                    # Get invoices
                     invoices_df = get_sheet_data(spreadsheet, 'Invoices')
                     party_invoices = invoices_df[invoices_df['party_id'].astype(str) == str(party_id)]
                     
-                    # Get payments
                     payments_df = get_sheet_data(spreadsheet, 'Payments')
                     party_payments = payments_df[payments_df['party_id'].astype(str) == str(party_id)]
                     
                     st.subheader(f"Statement for {selected_party}")
                     
-                    # Show invoices
                     if not party_invoices.empty:
                         st.write("**Invoices**")
                         st.dataframe(party_invoices[['invoice_no', 'date', 'total_amount', 'paid_amount', 'balance']], 
                                    use_container_width=True, hide_index=True)
                     
-                    # Show payments
                     if not party_payments.empty:
                         st.write("**Payments**")
                         st.dataframe(party_payments[['date', 'amount', 'payment_type', 'note']], 
                                    use_container_width=True, hide_index=True)
                     
-                    # Summary
                     col1, col2, col3 = st.columns(3)
                     total_sales = party_invoices['total_amount'].astype(float).sum() if not party_invoices.empty else 0
                     total_paid = party_payments['amount'].astype(float).sum() if not party_payments.empty else 0
@@ -636,10 +626,6 @@ def main():
                                 if amount > 0:
                                     invoice_id = int(party_invoices[party_invoices['invoice_no'] == invoice_no].index[0]) + 1
                                     if add_payment(spreadsheet, party_id, invoice_id, amount, payment_type, note):
-                                        # Update invoice
-                                        new_paid = float(invoice['paid_amount']) + amount
-                                        new_balance = float(invoice['total_amount']) - new_paid
-                                        
                                         st.success(f"Payment of ₹{amount:,.2f} recorded!")
                                         st.rerun()
                 else:
@@ -685,35 +671,38 @@ def main():
                 st.info("No sales for this month")
         
         elif report_type == "Product-wise Sales":
-            items_df = get_sheet_data(spreadsheet, 'Invoice_Items')
-            products_df = get_products(spreadsheet)
-            
-            if not items_df.empty and not products_df.empty:
-                # Map product names
-                product_sales = items_df.groupby('product_id')['amount'].sum().reset_index()
-                product_sales = product_sales.merge(products_df, left_on='product_id', right_index=True, how='left')
-                st.dataframe(product_sales[['name', 'amount']], use_container_width=True, hide_index=True)
+            if PLOTLY_AVAILABLE:
+                items_df = get_sheet_data(spreadsheet, 'Invoice_Items')
+                products_df = get_products(spreadsheet)
                 
-                # Pie chart
-                fig = px.pie(product_sales, values='amount', names='name', title='Product-wise Sales Distribution')
-                st.plotly_chart(fig, use_container_width=True)
+                if not items_df.empty and not products_df.empty:
+                    product_sales = items_df.groupby('product_id')['amount'].sum().reset_index()
+                    product_sales = product_sales.merge(products_df, left_on='product_id', right_index=True, how='left')
+                    st.dataframe(product_sales[['name', 'amount']], use_container_width=True, hide_index=True)
+                    
+                    fig = px.pie(product_sales, values='amount', names='name', title='Product-wise Sales Distribution')
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("No sales data available")
             else:
-                st.info("No sales data available")
+                st.info("📊 Install plotly to see product-wise sales chart")
         
         elif report_type == "Party-wise Sales":
-            invoices_df = get_sheet_data(spreadsheet, 'Invoices')
-            parties_df = get_parties(spreadsheet)
-            
-            if not invoices_df.empty and not parties_df.empty:
-                party_sales = invoices_df.groupby('party_id')['total_amount'].sum().reset_index()
-                party_sales = party_sales.merge(parties_df, left_on='party_id', right_on='id', how='left')
-                st.dataframe(party_sales[['shop_name', 'total_amount']], use_container_width=True, hide_index=True)
+            if PLOTLY_AVAILABLE:
+                invoices_df = get_sheet_data(spreadsheet, 'Invoices')
+                parties_df = get_parties(spreadsheet)
                 
-                # Bar chart
-                fig = px.bar(party_sales, x='shop_name', y='total_amount', title='Party-wise Sales')
-                st.plotly_chart(fig, use_container_width=True)
+                if not invoices_df.empty and not parties_df.empty:
+                    party_sales = invoices_df.groupby('party_id')['total_amount'].sum().reset_index()
+                    party_sales = party_sales.merge(parties_df, left_on='party_id', right_on='id', how='left')
+                    st.dataframe(party_sales[['shop_name', 'total_amount']], use_container_width=True, hide_index=True)
+                    
+                    fig = px.bar(party_sales, x='shop_name', y='total_amount', title='Party-wise Sales')
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("No data available")
             else:
-                st.info("No data available")
+                st.info("📊 Install plotly to see party-wise sales chart")
         
         elif report_type == "Outstanding Report":
             invoices_df = get_sheet_data(spreadsheet, 'Invoices')
@@ -743,7 +732,15 @@ def main():
         st.subheader("📦 Default Products")
         st.dataframe(pd.DataFrame(DEFAULT_PRODUCTS), use_container_width=True, hide_index=True)
         
-
+        st.subheader("🔑 Streamlit Secrets Configuration")
+        with st.expander("📝 Your Secrets are Configured"):
+            st.success("✅ Secrets found in `.streamlit/secrets.toml`")
+            st.info("""
+            **Your configuration:**
+            - Project ID: detergent-billing
+            - Service Account: detergent-billing@detergent-billing.iam.gserviceaccount.com
+            - Spreadsheet ID: 1jaat8u_k7rQyqhPcdL4zmUkkuG8gpwwk6z-Tvv2SMrQ
+            """)
 
 # ==================== RUN APPLICATION ====================
 
