@@ -40,25 +40,28 @@ def init_gclient():
         "https://spreadsheets.google.com/feeds",
         "https://www.googleapis.com/auth/drive"
     ]
-    # Dynamically extract and authenticate using Streamlit secrets [cite: 1]
     credentials_info = dict(st.secrets["google_sheets"])
     if "private_key" in credentials_info:
         credentials_info["private_key"] = credentials_info["private_key"].replace("\\n", "\n")
         
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(credentials_info, scopes) [cite: 1]
-    gclient = gspread.authorize(creds) [cite: 1]
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(credentials_info, scopes)
+    gclient = gspread.authorize(creds)
     return gclient.open_by_key(st.secrets["spreadsheet_key"])
 
 try:
     db_client = init_gclient()
 except Exception as e:
     st.error(f"Database Connection Failure: {e}")
+    st.info("Check that your .streamlit/secrets.toml file exists and your spreadsheet_key is valid.")
     st.stop()
 
 def get_dataframe(sheet_name: str) -> pd.DataFrame:
-    sheet = db_client.worksheet(sheet_name)
-    records = sheet.get_all_records()
-    return pd.DataFrame(records)
+    try:
+        sheet = db_client.worksheet(sheet_name)
+        records = sheet.get_all_records()
+        return pd.DataFrame(records)
+    except Exception:
+        return pd.DataFrame()
 
 def append_row(sheet_name: str, data_row: list):
     sheet = db_client.worksheet(sheet_name)
@@ -78,19 +81,16 @@ def generate_next_id(df: pd.DataFrame, column_name: str, prefix: str) -> str:
         last_id = valid_ids.iloc[-1]
         numeric_part = int(last_id[len(prefix):])
         next_numeric = numeric_part + 1
-    except ValueError:
+    except Exception:
         next_numeric = len(valid_ids) + 1
     return f"{prefix}{str(next_numeric).zfill(4)}"
 
-# Load Fresh Data Matrix Globally
+# Load Fresh Data Matrix Globally with Fail-Safes
 df_products = get_dataframe("Products")
 df_parties = get_dataframe("Parties")
 df_sales = get_dataframe("Sales")
 df_receipts = get_dataframe("Receipts")
-try:
-    df_returns = get_dataframe("Sales Return")
-except Exception:
-    df_returns = pd.DataFrame()
+df_returns = get_dataframe("Sales Return")
 
 # ==========================================
 # 4. APPLICATION LAYOUT ROUTER (TABS)
@@ -98,7 +98,6 @@ except Exception:
 st.markdown('<div class="main-header">🧼 Detergent Billing & Inventory Suite</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-header">All-in-One Real-Time Workspace Engine</div>', unsafe_allow_html=True)
 
-# Main Multi-workspace Controller Interface
 app_workspace = st.tabs([
     "📊 Dashboard", 
     "📦 Product Master", 
@@ -136,16 +135,17 @@ with app_workspace[0]:
     g_col1, g_col2 = st.columns([2, 1])
     with g_col1:
         st.subheader("📈 Sales Velocity Performance")
-        if not df_sales.empty:
-            df_sales['Parsed Date'] = pd.to_datetime(df_sales['Date'])
-            df_monthly = df_sales.groupby(df_sales['Parsed Date'].dt.strftime('%Y-%m'))['Total Amount'].sum().reset_index()
+        if not df_sales.empty and 'Date' in df_sales.columns:
+            df_chart_data = df_sales.copy()
+            df_chart_data['Parsed Date'] = pd.to_datetime(df_chart_data['Date'])
+            df_monthly = df_chart_data.groupby(df_chart_data['Parsed Date'].dt.strftime('%Y-%m'))['Total Amount'].sum().reset_index()
             fig = px.line(df_monthly, x='Parsed Date', y='Total Amount', markers=True, color_discrete_sequence=['#2E7D32'])
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No transaction data recorded yet.")
     with g_col2:
         st.subheader("⚠️ Low Stock Flags")
-        if not df_products.empty:
+        if not df_products.empty and 'Stock' in df_products.columns:
             df_low = df_products[df_products['Stock'].astype(int) < 50][['Product Name', 'Stock']]
             st.dataframe(df_low, hide_index=True, use_container_width=True) if not df_low.empty else st.success("Stock levels healthy.")
 
@@ -169,7 +169,10 @@ with app_workspace[1]:
                     st.success("Product posted successfully!"); st.rerun()
                 else: st.error("Name required.")
     with p_tab2:
-        st.dataframe(df_products, hide_index=True, use_container_width=True)
+        if not df_products.empty:
+            st.dataframe(df_products, hide_index=True, use_container_width=True)
+        else:
+            st.info("No products found in database.")
 
 # ==========================================
 # MODULE 3: PARTY MASTER WORKSPACE
@@ -208,10 +211,12 @@ with app_workspace[3]:
         if not df_parties.empty:
             party_choice = st.selectbox("Assign Customer Entity", options=df_parties['Party ID'] + " - " + df_parties['Shop Name'])
             sel_party_id = party_choice.split(" - ")[0]
-        else: st.error("Please configure parties first."); st.stop()
+        else: 
+            st.error("Please configure parties first.")
+            sel_party_id = None
         
     st.markdown("---")
-    if not df_products.empty:
+    if not df_products.empty and sel_party_id:
         i_col1, i_col2, i_col3 = st.columns([3, 1, 1])
         with i_col1:
             prod_choice = st.selectbox("Select Catalog Detergent Variant", options=df_products['Product ID'] + " - " + df_products['Product Name'])
@@ -285,10 +290,7 @@ with app_workspace[4]:
 # ==========================================
 with app_workspace[5]:
     st.subheader("Reversal Sales Returns & Inventory Optimization")
-    try:
-        df_sales_items = get_dataframe("Sales Items")
-    except Exception:
-        df_sales_items = pd.DataFrame()
+    df_sales_items = get_dataframe("Sales Items")
 
     if not df_sales_items.empty:
         next_sr_id = generate_next_id(df_returns, "Return No", "SR")
