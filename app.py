@@ -8,7 +8,7 @@ import io
 from openpyxl import Workbook
 
 # ==========================================
-# 1. PAGE CONFIGURATION & THEME STYLING
+# 1. PAGE SETUP & STYLING ENGINE
 # ==========================================
 st.set_page_config(
     page_title="Detergent Billing System",
@@ -32,28 +32,48 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. DATABASE PERSISTENCE LAYER (CONNECTOR)
+# 2. BULLETPROOF DATABASE CONNECTOR
 # ==========================================
 @st.cache_resource
 def init_gclient():
-    scopes = [
-        "https://spreadsheets.google.com/feeds",
-        "https://www.googleapis.com/auth/drive"
-    ]
+    scopes = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     credentials_info = dict(st.secrets["google_sheets"])
     if "private_key" in credentials_info:
         credentials_info["private_key"] = credentials_info["private_key"].replace("\\n", "\n")
-        
     creds = ServiceAccountCredentials.from_json_keyfile_dict(credentials_info, scopes)
-    gclient = gspread.authorize(creds)
-    return gclient.open_by_key(st.secrets["spreadsheet_key"])
+    return gspread.authorize(creds).open_by_key(st.secrets["spreadsheet_key"])
 
 try:
     db_client = init_gclient()
 except Exception as e:
-    st.error(f"Database Connection Failure: {e}")
-    st.info("Check that your .streamlit/secrets.toml file exists and your spreadsheet_key is valid.")
+    st.error(f"❌ Database Connection Failure: {e}")
+    st.info("Ensure your Google Sheet is shared with: detergent-billing@detergent-billing.iam.gserviceaccount.com as an EDITOR.")
     st.stop()
+
+# Auto-Initialize empty sheets with correct structures if row 1 is blank
+def safe_init_sheet(sheet_name: str, expected_headers: list):
+    try:
+        sheet = db_client.worksheet(sheet_name)
+    except gspread.exceptions.WorksheetNotFound:
+        sheet = db_client.add_worksheet(title=sheet_name, rows="1000", cols="20")
+    
+    headers = sheet.row_values(1)
+    if not headers:
+        sheet.append_row(expected_headers)
+    return sheet
+
+# Run Initialization Safeguards
+sheet_schemas = {
+    "Products": ["Product ID", "Product Name", "Rate", "Stock"],
+    "Parties": ["Party ID", "Party Name", "Shop Name", "Mobile", "Address", "Opening Balance"],
+    "Sales": ["Invoice No", "Date", "Party ID", "Party Name", "Total Amount", "Status"],
+    "Sales Items": ["Invoice No", "Product ID", "Product Name", "Qty", "Rate", "Amount"],
+    "Receipts": ["Receipt No", "Date", "Party ID", "Invoice No", "Amount", "Payment Mode", "Remarks"],
+    "Sales Return": ["Return No", "Date", "Invoice No", "Product ID", "Qty Returned", "Amount"]
+}
+
+for name, schema in sheet_schemas.items():
+    safe_init_sheet(name, schema)
 
 def get_dataframe(sheet_name: str) -> pd.DataFrame:
     try:
@@ -61,14 +81,13 @@ def get_dataframe(sheet_name: str) -> pd.DataFrame:
         records = sheet.get_all_records()
         return pd.DataFrame(records)
     except Exception:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=sheet_schemas[sheet_name])
 
 def append_row(sheet_name: str, data_row: list):
-    sheet = db_client.worksheet(sheet_name)
-    sheet.append_row(data_row)
+    db_client.worksheet(sheet_name).append_row(data_row)
 
 # ==========================================
-# 3. CORE BUSINESS FORMULA UTILITIES
+# 3. SEQUENCE AUTO-ID IDENTIFIER UTILITIES
 # ==========================================
 def generate_next_id(df: pd.DataFrame, column_name: str, prefix: str) -> str:
     if df.empty or column_name not in df.columns:
@@ -80,12 +99,11 @@ def generate_next_id(df: pd.DataFrame, column_name: str, prefix: str) -> str:
     try:
         last_id = valid_ids.iloc[-1]
         numeric_part = int(last_id[len(prefix):])
-        next_numeric = numeric_part + 1
+        return f"{prefix}{str(numeric_part + 1).zfill(4)}"
     except Exception:
-        next_numeric = len(valid_ids) + 1
-    return f"{prefix}{str(next_numeric).zfill(4)}"
+        return f"{prefix}{str(len(valid_ids) + 1).zfill(4)}"
 
-# Load Fresh Data Matrix Globally with Fail-Safes
+# Load Clean Global States
 df_products = get_dataframe("Products")
 df_parties = get_dataframe("Parties")
 df_sales = get_dataframe("Sales")
@@ -93,24 +111,14 @@ df_receipts = get_dataframe("Receipts")
 df_returns = get_dataframe("Sales Return")
 
 # ==========================================
-# 4. APPLICATION LAYOUT ROUTER (TABS)
+# 4. VIEW LAYOUT WORKSPACES
 # ==========================================
 st.markdown('<div class="main-header">🧼 Detergent Billing & Inventory Suite</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-header">All-in-One Real-Time Workspace Engine</div>', unsafe_allow_html=True)
 
-app_workspace = st.tabs([
-    "📊 Dashboard", 
-    "📦 Product Master", 
-    "👥 Party Master", 
-    "🧾 Sales Billing", 
-    "💰 Receipt Entry", 
-    "🔄 Sales Return", 
-    "📈 Reports Engine"
-])
+app_workspace = st.tabs(["📊 Dashboard", "📦 Product Master", "👥 Party Master", "🧾 Sales Billing", "💰 Receipt Entry", "🔄 Sales Return", "📈 Reports Engine"])
 
-# ==========================================
-# MODULE 1: DASHBOARD WORKSPACE
-# ==========================================
+# MODULE 1: DASHBOARD
 with app_workspace[0]:
     st.subheader("Operational Summary (Today)")
     today_str = datetime.date.today().strftime("%Y-%m-%d")
@@ -119,10 +127,10 @@ with app_workspace[0]:
     today_rec_val = df_receipts[df_receipts['Date'] == today_str]['Amount'].sum() if not df_receipts.empty else 0.0
     total_parties = len(df_parties) if not df_parties.empty else 0
     
-    open_bal_sum = df_parties['Opening Balance'].sum() if not df_parties.empty else 0.0
-    sales_sum = df_sales['Total Amount'].sum() if not df_sales.empty else 0.0
-    receipts_sum = df_receipts['Amount'].sum() if not df_receipts.empty else 0.0
-    returns_sum = df_returns['Amount'].sum() if not df_returns.empty else 0.0
+    open_bal_sum = pd.to_numeric(df_parties['Opening Balance'], errors='coerce').sum() if not df_parties.empty else 0.0
+    sales_sum = pd.to_numeric(df_sales['Total Amount'], errors='coerce').sum() if not df_sales.empty else 0.0
+    receipts_sum = pd.to_numeric(df_receipts['Amount'], errors='coerce').sum() if not df_receipts.empty else 0.0
+    returns_sum = pd.to_numeric(df_returns['Amount'], errors='coerce').sum() if not df_returns.empty else 0.0
     total_outstanding = (open_bal_sum + sales_sum) - (receipts_sum + returns_sum)
     
     kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
@@ -146,16 +154,13 @@ with app_workspace[0]:
     with g_col2:
         st.subheader("⚠️ Low Stock Flags")
         if not df_products.empty and 'Stock' in df_products.columns:
-            df_low = df_products[df_products['Stock'].astype(int) < 50][['Product Name', 'Stock']]
+            df_low = df_products[pd.to_numeric(df_products['Stock'], errors='coerce') < 50][['Product Name', 'Stock']]
             st.dataframe(df_low, hide_index=True, use_container_width=True) if not df_low.empty else st.success("Stock levels healthy.")
 
-# ==========================================
-# MODULE 2: PRODUCT MASTER WORKSPACE
-# ==========================================
+# MODULE 2: PRODUCT MASTER
 with app_workspace[1]:
     st.subheader("Product Inventory Configuration")
     p_tab1, p_tab2 = st.tabs(["✨ Add Product SKU", "📦 View & Adjust Stocks"])
-    
     with p_tab1:
         next_p_id = generate_next_id(df_products, "Product ID", "P")
         with st.form("prod_form", clear_on_submit=True):
@@ -169,14 +174,9 @@ with app_workspace[1]:
                     st.success("Product posted successfully!"); st.rerun()
                 else: st.error("Name required.")
     with p_tab2:
-        if not df_products.empty:
-            st.dataframe(df_products, hide_index=True, use_container_width=True)
-        else:
-            st.info("No products found in database.")
+        st.dataframe(df_products, hide_index=True, use_container_width=True) if not df_products.empty else st.info("No products found.")
 
-# ==========================================
-# MODULE 3: PARTY MASTER WORKSPACE
-# ==========================================
+# MODULE 3: PARTY MASTER
 with app_workspace[2]:
     st.subheader("Client Party Profile Registry")
     next_party_id = generate_next_id(df_parties, "Party ID", "PAR")
@@ -193,15 +193,11 @@ with app_workspace[2]:
                 st.success("Party registered safely!"); st.rerun()
             else: st.error("Shop Name is mandatory.")
 
-# ==========================================
-# MODULE 4: SALES BILLING WORKSPACE
-# ==========================================
+# MODULE 4: SALES BILLING
 with app_workspace[3]:
     st.subheader("Transactional Checkout Register")
     next_inv = generate_next_id(df_sales, "Invoice No", "INV")
-    
-    if 'cart' not in st.session_state:
-        st.session_state.cart = []
+    if 'cart' not in st.session_state: st.session_state.cart = []
         
     b_col1, b_col2 = st.columns(2)
     with b_col1:
@@ -211,9 +207,7 @@ with app_workspace[3]:
         if not df_parties.empty:
             party_choice = st.selectbox("Assign Customer Entity", options=df_parties['Party ID'] + " - " + df_parties['Shop Name'])
             sel_party_id = party_choice.split(" - ")[0]
-        else: 
-            st.error("Please configure parties first.")
-            sel_party_id = None
+        else: st.error("Please configure parties first."); sel_party_id = None
         
     st.markdown("---")
     if not df_products.empty and sel_party_id:
@@ -233,10 +227,7 @@ with app_workspace[3]:
             if st.button("🛒 Append Line Item"):
                 if order_qty > s_level: st.error("Insufficient inventory bounds.")
                 else:
-                    st.session_state.cart.append({
-                        "Product ID": sel_prod_id, "Product Name": p_row['Product Name'],
-                        "Qty": order_qty, "Rate": p_rate, "Amount": order_qty * p_rate
-                    })
+                    st.session_state.cart.append({"Product ID": sel_prod_id, "Product Name": p_row['Product Name'], "Qty": order_qty, "Rate": p_rate, "Amount": order_qty * p_rate})
                     st.rerun()
                     
     if st.session_state.cart:
@@ -256,12 +247,9 @@ with app_workspace[3]:
                 append_row("Sales Items", [inv_no, row['Product ID'], row['Product Name'], row['Qty'], row['Rate'], row['Amount']])
                 r_idx = next(idx for idx, record in enumerate(p_records) if record["Product ID"] == row['Product ID']) + 2
                 p_worksheet.update_cell(r_idx, 4, int(p_records[r_idx-2]["Stock"]) - row['Qty'])
-                
-            st.success("Invoice committed directly to data matrix!"); st.session_state.cart = []; st.rerun()
+            st.success("Invoice committed directly!"); st.session_state.cart = []; st.rerun()
 
-# ==========================================
-# MODULE 5: RECEIPT ENTRY WORKSPACE
-# ==========================================
+# MODULE 5: RECEIPT ENTRY
 with app_workspace[4]:
     st.subheader("Cash Collection Inward Receipt Logging")
     if not df_sales.empty:
@@ -275,22 +263,22 @@ with app_workspace[4]:
                 match_inv_id = target_inv.split(" - ")[0]
             with r_col2:
                 matched_sale = df_sales[df_sales['Invoice No'] == match_inv_id].iloc[0]
-                st.info(f"**Invoice Value:** ₹{matched_sale['Total Amount']:.2f} | **Client ID:** {matched_sale['Party ID']}")
+                st.info(f"**Invoice Value:** ₹{matched_sale['Total Amount']:.2f}")
                 rec_amt = st.number_input("Injected Cash Payment Amount (₹)", min_value=0.0, step=50.0)
                 p_mode = st.selectbox("Payment Mode Channels", ["Cash", "UPI", "Bank Transfer"])
                 remarks = st.text_input("Operational Remarks Notation")
-                
             if st.form_submit_button("Post Liquid Receipt Entry"):
                 append_row("Receipts", [next_rec_id, str(r_date), matched_sale['Party ID'], match_inv_id, rec_amt, p_mode, remarks])
-                st.success("Receipt applied to matching ledger points safely."); st.rerun()
-    else: st.info("No active sales benchmarks found to receive funds against.")
+                st.success("Receipt applied safely."); st.rerun()
+    else: st.info("No active sales benchmarks found.")
 
-# ==========================================
-# MODULE 6: SALES RETURN WORKSPACE
-# ==========================================
+# MODULE 6: SALES RETURN
 with app_workspace[5]:
-    st.subheader("Reversal Sales Returns & Inventory Optimization")
-    df_sales_items = get_dataframe("Sales Items")
+    st.subheader("Reversal Sales Returns")
+    try:
+        df_sales_items = get_dataframe("Sales Items")
+    except Exception:
+        df_sales_items = pd.DataFrame()
 
     if not df_sales_items.empty:
         next_sr_id = generate_next_id(df_returns, "Return No", "SR")
@@ -304,10 +292,8 @@ with app_workspace[5]:
                 filtered_items = df_sales_items[df_sales_items['Invoice No'] == ret_inv]
                 ret_prod = st.selectbox("Choose Product Variant Returned", options=filtered_items['Product ID'] + " - " + filtered_items['Product Name'])
                 sel_ret_prod_id = ret_prod.split(" - ")[0]
-                
                 matched_line = filtered_items[filtered_items['Product ID'] == sel_ret_prod_id].iloc[0]
                 ret_qty = st.number_input("Return Volume Count Quantity", min_value=1, max_value=int(matched_line['Qty']), step=1)
-                
             if st.form_submit_button("Post Authorization Credit Note"):
                 calc_refund = ret_qty * float(matched_line['Rate'])
                 append_row("Sales Return", [next_sr_id, str(sr_date), ret_inv, sel_ret_prod_id, ret_qty, calc_refund])
@@ -316,29 +302,19 @@ with app_workspace[5]:
                 p_recs = p_sheet.get_all_records()
                 r_idx = next(i for i, r in enumerate(p_recs) if r["Product ID"] == sel_ret_prod_id) + 2
                 p_sheet.update_cell(r_idx, 4, int(p_recs[r_idx-2]["Stock"]) + ret_qty)
-                
-                st.success(f"Credit Note generated for ₹{calc_refund:.2f}. Stock updated."); st.rerun()
-    else: st.info("No transactional invoice metadata records extracted yet.")
+                st.success("Credit Note generated. Stock updated."); st.rerun()
+    else: st.info("No transactional invoice metadata records found.")
 
-# ==========================================
-# MODULE 7: REPORTS ENGINE WORKSPACE
-# ==========================================
+# MODULE 7: REPORTS ENGINE
 with app_workspace[6]:
     st.subheader("Enterprise Accounts Report & Data Exporters")
-    rep_choice = st.selectbox("Select Analysis Type Layout", ["Outstanding Due Balances Matrix", "Ledger Accounting Audits"])
-    
-    if rep_choice == "Outstanding Due Balances Matrix" and not df_parties.empty:
+    if not df_parties.empty:
         rep_rows = []
         for _, p in df_parties.iterrows():
             pid = p['Party ID']
-            s_total = df_sales[df_sales['Party ID'] == pid]['Total Amount'].sum() if not df_sales.empty else 0.0
-            r_total = df_receipts[df_receipts['Party ID'] == pid]['Amount'].sum() if not df_receipts.empty else 0.0
-            
-            ret_total = 0.0
-            if not df_returns.empty and not df_sales.empty:
-                party_invs = df_sales[df_sales['Party ID'] == pid]['Invoice No'].unique()
-                ret_total = df_returns[df_returns['Invoice No'].isin(party_invs)]['Amount'].sum()
-                
+            s_total = pd.to_numeric(df_sales[df_sales['Party ID'] == pid]['Total Amount'], errors='coerce').sum() if not df_sales.empty else 0.0
+            r_total = pd.to_numeric(df_receipts[df_receipts['Party ID'] == pid]['Amount'], errors='coerce').sum() if not df_receipts.empty else 0.0
+            ret_total = pd.to_numeric(df_returns[df_returns['Invoice No'].isin(df_sales[df_sales['Party ID'] == pid]['Invoice No'].unique())]['Amount'], errors='coerce').sum() if (not df_returns.empty and not df_sales.empty) else 0.0
             balance_due = float(p['Opening Balance']) + s_total - r_total - ret_total
             rep_rows.append({"Client ID": pid, "Shop Entity Name": p['Shop Name'], "Contact Profile": p['Mobile'], "Outstanding Sum (₹)": balance_due})
             
@@ -350,7 +326,6 @@ with app_workspace[6]:
         ws.title = "Dues Summary"
         ws.append(["Client ID", "Shop Entity Name", "Contact Profile", "Outstanding Sum"])
         for record in rep_rows: ws.append([record["Client ID"], record["Shop Entity Name"], record["Contact Profile"], record["Outstanding Sum (₹)"]])
-        
         ex_io = io.BytesIO(); wb.save(ex_io); ex_io.seek(0)
-        st.download_button("📥 Download Excel Spreadsheet Summary Matrix", data=ex_io, file_name="Ecosystem_Dues_Master.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    else: st.info("Ecosystem profile analytics matrices currently waiting on transaction logs.")
+        st.download_button("📥 Download Excel Summary Matrix", data=ex_io, file_name="Dues_Master.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    else: st.info("No customer accounts on file.")
