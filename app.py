@@ -1,8 +1,3 @@
-"""
-Simple Detergent Billing App - Version 1 (Basic)
-Just the essentials: Products, Parties, Sales Billing
-"""
-
 import streamlit as st
 import pandas as pd
 from datetime import datetime
