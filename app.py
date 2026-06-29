@@ -1,15 +1,11 @@
 """
-Simple Detergent Billing App - Version 1
-Products: Dishwash Liquid 1L (₹120), Detergent Powder 1kg (₹120), 
-         Dishwash Liquid 7+1 (₹840), Detergent Powder 7+1 (₹840)
+Simple Detergent Billing - Using Streamlit's Native Google Sheets
+No google-api-python-client needed!
 """
 
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-import json
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
 
 # ==================== PAGE CONFIG ====================
 st.set_page_config(
@@ -18,116 +14,83 @@ st.set_page_config(
     layout="wide"
 )
 
-# ==================== GOOGLE SHEETS SETUP ====================
+# ==================== GOOGLE SHEETS USING STREAMLIT NATIVE ====================
 
-def get_sheets_service():
-    """Connect to Google Sheets"""
+def get_sheets():
+    """Connect using Streamlit's native Google Sheets"""
     try:
-        if 'google_sheets' in st.secrets:
-            creds_dict = dict(st.secrets['google_sheets'])
-        else:
-            st.warning("Please upload your Service Account JSON")
-            uploaded = st.file_uploader("Upload JSON", type=['json'])
-            if uploaded:
-                creds_dict = json.load(uploaded)
-            else:
-                return None
-        
-        creds = service_account.Credentials.from_service_account_info(
-            creds_dict,
-            scopes=['https://www.googleapis.com/auth/spreadsheets']
-        )
-        return build('sheets', 'v4', credentials=creds)
+        # Streamlit's native connection (requires secrets)
+        conn = st.connection("gsheets", type="GSheetsConnection")
+        return conn
     except Exception as e:
         st.error(f"Connection error: {str(e)}")
         return None
 
-def get_sheet_id():
-    return "1jaat8u_k7rQyqhPcdL4zmUkkuG8gpwwk6z-Tvv2SMrQ"
-
-def get_data(service, sheet_name):
+def get_data(conn, sheet_name):
     """Get data from sheet"""
     try:
-        result = service.spreadsheets().values().get(
-            spreadsheetId=get_sheet_id(),
-            range=f"{sheet_name}!A:Z"
-        ).execute()
-        values = result.get('values', [])
-        if not values:
-            return pd.DataFrame()
-        return pd.DataFrame(values[1:], columns=values[0])
+        df = conn.read(worksheet=sheet_name, ttl=60)
+        return df
     except:
         return pd.DataFrame()
 
-def add_row(service, sheet_name, row_data):
+def add_row(conn, sheet_name, row_data):
     """Add row to sheet"""
     try:
-        body = {'values': [row_data]}
-        service.spreadsheets().values().append(
-            spreadsheetId=get_sheet_id(),
-            range=f"{sheet_name}!A:Z",
-            valueInputOption='USER_ENTERED',
-            body=body
-        ).execute()
+        df = get_data(conn, sheet_name)
+        if df.empty:
+            # Create new dataframe with headers
+            headers = {
+                'Products': ['Product ID', 'Product Name', 'Rate', 'Stock'],
+                'Parties': ['Party ID', 'Party Name', 'Mobile'],
+                'Sales': ['Invoice No', 'Date', 'Party', 'Total', 'Status']
+            }
+            df = pd.DataFrame(columns=headers.get(sheet_name, []))
+        
+        # Add row
+        new_row = pd.DataFrame([row_data], columns=df.columns)
+        df = pd.concat([df, new_row], ignore_index=True)
+        conn.write(dataframe=df, worksheet=sheet_name)
         return True
     except Exception as e:
         st.error(f"Error: {str(e)}")
         return False
 
-def update_data(service, sheet_name, df):
-    """Update entire sheet"""
-    try:
-        service.spreadsheets().values().clear(
-            spreadsheetId=get_sheet_id(),
-            range=f"{sheet_name}!A:Z",
-            body={}
-        ).execute()
-        if not df.empty:
-            values = [df.columns.tolist()] + df.values.tolist()
-            service.spreadsheets().values().update(
-                spreadsheetId=get_sheet_id(),
-                range=f"{sheet_name}!A1",
-                valueInputOption='USER_ENTERED',
-                body={'values': values}
-            ).execute()
-        return True
-    except:
-        return False
-
 # ==================== INIT ====================
 
-def init_sheets(service):
-    """Initialize sheets"""
-    sheets = {
-        'Products': ['Product ID', 'Product Name', 'Rate', 'Stock'],
-        'Parties': ['Party ID', 'Party Name', 'Mobile'],
-        'Sales': ['Invoice No', 'Date', 'Party', 'Total', 'Status']
-    }
-    
-    for sheet_name, headers in sheets.items():
-        df = get_data(service, sheet_name)
-        if df.empty:
-            df = pd.DataFrame(columns=headers)
-            update_data(service, sheet_name, df)
-    
-    # Add default products
-    products = get_data(service, 'Products')
-    if products.empty:
-        defaults = [
-            ['P001', 'Dishwash Liquid 1L', 120, 100],
-            ['P002', 'Detergent Powder 1kg', 120, 100],
-            ['P003', 'Dishwash Liquid 7+1', 840, 50],
-            ['P004', 'Detergent Powder 7+1', 840, 50]
-        ]
-        df = pd.DataFrame(defaults, columns=['Product ID', 'Product Name', 'Rate', 'Stock'])
-        update_data(service, 'Products', df)
-    
-    return True
+def init_sheets(conn):
+    """Initialize sheets with default data"""
+    try:
+        products = get_data(conn, 'Products')
+        if products.empty:
+            defaults = [
+                ['P001', 'Dishwash Liquid 1L', 120, 100],
+                ['P002', 'Detergent Powder 1kg', 120, 100],
+                ['P003', 'Dishwash Liquid 7+1', 840, 50],
+                ['P004', 'Detergent Powder 7+1', 840, 50]
+            ]
+            df = pd.DataFrame(defaults, columns=['Product ID', 'Product Name', 'Rate', 'Stock'])
+            conn.write(dataframe=df, worksheet='Products')
+        
+        # Initialize other sheets
+        for sheet in ['Parties', 'Sales']:
+            df = get_data(conn, sheet)
+            if df.empty:
+                if sheet == 'Parties':
+                    df = pd.DataFrame(columns=['Party ID', 'Party Name', 'Mobile'])
+                elif sheet == 'Sales':
+                    df = pd.DataFrame(columns=['Invoice No', 'Date', 'Party', 'Total', 'Status'])
+                conn.write(dataframe=df, worksheet=sheet)
+        
+        return True
+    except Exception as e:
+        st.error(f"Init error: {str(e)}")
+        return False
 
-def get_next_invoice(service):
+def get_next_invoice(conn):
     """Generate next invoice number"""
-    sales = get_data(service, 'Sales')
-    if sales.empty:
+    sales = get_data(conn, 'Sales')
+    if sales.empty or 'Invoice No' not in sales.columns:
         return "INV001"
     nums = [int(str(x).replace('INV', '')) for x in sales['Invoice No'] if str(x).startswith('INV')]
     next_num = max(nums) + 1 if nums else 1
@@ -139,9 +102,9 @@ def main():
     st.title("🧺 Simple Detergent Billing")
     
     # Connect
-    service = get_sheets_service()
-    if service:
-        init_sheets(service)
+    conn = get_sheets()
+    if conn:
+        init_sheets(conn)
         st.sidebar.success("✅ Connected")
     else:
         st.sidebar.warning("⚠️ Offline")
@@ -153,14 +116,14 @@ def main():
     if menu == "📊 Dashboard":
         st.header("Dashboard")
         
-        products = get_data(service, 'Products') if service else pd.DataFrame()
-        sales = get_data(service, 'Sales') if service else pd.DataFrame()
-        parties = get_data(service, 'Parties') if service else pd.DataFrame()
+        products = get_data(conn, 'Products') if conn else pd.DataFrame()
+        sales = get_data(conn, 'Sales') if conn else pd.DataFrame()
+        parties = get_data(conn, 'Parties') if conn else pd.DataFrame()
         
         col1, col2, col3 = st.columns(3)
         col1.metric("Products", len(products))
         col2.metric("Parties", len(parties))
-        col3.metric("Total Sales", f"₹{sales['Total'].astype(float).sum():,.2f}" if not sales.empty else "₹0")
+        col3.metric("Total Sales", f"₹{sales['Total'].astype(float).sum():,.2f}" if not sales.empty and 'Total' in sales.columns else "₹0")
         
         st.subheader("Recent Sales")
         if not sales.empty:
@@ -170,11 +133,11 @@ def main():
     elif menu == "📦 Products":
         st.header("Product Master")
         
-        if not service:
-            st.error("Not connected to Google Sheets")
+        if not conn:
+            st.error("Not connected")
             return
         
-        products = get_data(service, 'Products')
+        products = get_data(conn, 'Products')
         
         tab1, tab2 = st.tabs(["View Products", "Add Product"])
         
@@ -182,7 +145,6 @@ def main():
             if not products.empty:
                 st.dataframe(products, use_container_width=True)
                 
-                # Quick stock update
                 st.subheader("Update Stock")
                 col1, col2 = st.columns(2)
                 with col1:
@@ -193,7 +155,7 @@ def main():
                         if change != 0:
                             idx = products[products['Product Name'] == selected].index[0]
                             products.loc[idx, 'Stock'] = int(products.loc[idx, 'Stock']) + change
-                            update_data(service, 'Products', products)
+                            conn.write(dataframe=products, worksheet='Products')
                             st.success("Stock updated!")
                             st.rerun()
             else:
@@ -207,9 +169,9 @@ def main():
                 
                 if st.form_submit_button("Add Product"):
                     if name:
-                        products = get_data(service, 'Products')
+                        products = get_data(conn, 'Products')
                         product_id = f"P{len(products)+1:03d}"
-                        add_row(service, 'Products', [product_id, name, rate, stock])
+                        add_row(conn, 'Products', [product_id, name, rate, stock])
                         st.success(f"Added {name}")
                         st.rerun()
     
@@ -217,11 +179,11 @@ def main():
     elif menu == "🏪 Parties":
         st.header("Party Master")
         
-        if not service:
-            st.error("Not connected to Google Sheets")
+        if not conn:
+            st.error("Not connected")
             return
         
-        parties = get_data(service, 'Parties')
+        parties = get_data(conn, 'Parties')
         
         tab1, tab2 = st.tabs(["View Parties", "Add Party"])
         
@@ -238,8 +200,9 @@ def main():
                 
                 if st.form_submit_button("Add Party"):
                     if name:
+                        parties = get_data(conn, 'Parties')
                         party_id = f"PT{len(parties)+1:03d}" if not parties.empty else "PT001"
-                        add_row(service, 'Parties', [party_id, name, mobile])
+                        add_row(conn, 'Parties', [party_id, name, mobile])
                         st.success(f"Added {name}")
                         st.rerun()
     
@@ -247,12 +210,12 @@ def main():
     elif menu == "🧾 Billing":
         st.header("Sales Billing")
         
-        if not service:
-            st.error("Not connected to Google Sheets")
+        if not conn:
+            st.error("Not connected")
             return
         
-        products = get_data(service, 'Products')
-        parties = get_data(service, 'Parties')
+        products = get_data(conn, 'Products')
+        parties = get_data(conn, 'Parties')
         
         if products.empty:
             st.warning("No products! Add products first.")
@@ -262,7 +225,6 @@ def main():
             st.warning("No parties! Add parties first.")
             return
         
-        # Cart in session
         if 'cart' not in st.session_state:
             st.session_state.cart = []
         
@@ -305,7 +267,6 @@ def main():
             else:
                 st.info("Cart empty")
         
-        # Create Invoice
         st.markdown("---")
         st.subheader("Create Invoice")
         
@@ -316,11 +277,10 @@ def main():
             if not st.session_state.cart:
                 st.error("Cart is empty!")
             else:
-                invoice_no = get_next_invoice(service)
+                invoice_no = get_next_invoice(conn)
                 total = sum(item['Amount'] for item in st.session_state.cart)
                 
-                # Save invoice
-                add_row(service, 'Sales', [
+                add_row(conn, 'Sales', [
                     invoice_no,
                     datetime.now().strftime("%Y-%m-%d %H:%M"),
                     party,
@@ -332,7 +292,7 @@ def main():
                 for item in st.session_state.cart:
                     idx = products[products['Product Name'] == item['Product']].index[0]
                     products.loc[idx, 'Stock'] = int(products.loc[idx, 'Stock']) - item['Qty']
-                update_data(service, 'Products', products)
+                conn.write(dataframe=products, worksheet='Products')
                 
                 st.success(f"Invoice {invoice_no} generated! Total: ₹{total:,.2f}")
                 
