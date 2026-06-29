@@ -1,5 +1,5 @@
 """
-Simple Detergent Billing App
+Simple Detergent Billing App - With Parties Working
 Products: Dishwash Liquid 1L (₹120), Detergent Powder 1kg (₹120), 
          Dishwash Liquid 7+1 (₹840), Detergent Powder 7+1 (₹840)
 """
@@ -21,62 +21,48 @@ st.set_page_config(
 # ==================== GOOGLE SHEETS SETUP ====================
 
 def get_sheets_service():
-    """Connect to Google Sheets using Service Account"""
+    """Connect to Google Sheets using secrets"""
     try:
-        # Get credentials from secrets
         if 'google_sheets' in st.secrets:
             creds_dict = dict(st.secrets['google_sheets'])
         else:
-            st.warning("⚠️ Please upload your Service Account JSON file")
-            uploaded = st.file_uploader("Upload Service Account JSON", type=['json'])
-            if uploaded:
-                creds_dict = json.load(uploaded)
-            else:
-                return None
+            st.warning("⚠️ No secrets found!")
+            return None
         
-        # Create credentials
         creds = service_account.Credentials.from_service_account_info(
             creds_dict,
             scopes=['https://www.googleapis.com/auth/spreadsheets']
         )
-        
-        # Build service
-        service = build('sheets', 'v4', credentials=creds)
-        return service
-        
+        return build('sheets', 'v4', credentials=creds)
     except Exception as e:
         st.error(f"❌ Connection error: {str(e)}")
         return None
 
 def get_sheet_id():
-    """Get spreadsheet ID"""
     return "1jaat8u_k7rQyqhPcdL4zmUkkuG8gpwwk6z-Tvv2SMrQ"
 
 def get_data(service, sheet_name):
-    """Get data from a Google Sheet"""
+    """Get data from sheet"""
     try:
         result = service.spreadsheets().values().get(
             spreadsheetId=get_sheet_id(),
             range=f"{sheet_name}!A:Z"
         ).execute()
-        
         values = result.get('values', [])
         if not values:
             return pd.DataFrame()
-        
         headers = values[0]
         rows = values[1:]
         df = pd.DataFrame(rows, columns=headers)
         return df
-        
-    except Exception as e:
+    except:
         return pd.DataFrame()
 
 def add_row(service, sheet_name, row_data):
-    """Add a row to a Google Sheet"""
+    """Add row to sheet"""
     try:
         body = {'values': [row_data]}
-        result = service.spreadsheets().values().append(
+        service.spreadsheets().values().append(
             spreadsheetId=get_sheet_id(),
             range=f"{sheet_name}!A:Z",
             valueInputOption='USER_ENTERED',
@@ -88,37 +74,31 @@ def add_row(service, sheet_name, row_data):
         return False
 
 def update_data(service, sheet_name, df):
-    """Update entire sheet with DataFrame"""
+    """Update entire sheet"""
     try:
-        # Clear existing data
         service.spreadsheets().values().clear(
             spreadsheetId=get_sheet_id(),
             range=f"{sheet_name}!A:Z",
             body={}
         ).execute()
-        
-        # Update with new data
         if not df.empty:
             values = [df.columns.tolist()] + df.values.tolist()
-            body = {'values': values}
             service.spreadsheets().values().update(
                 spreadsheetId=get_sheet_id(),
                 range=f"{sheet_name}!A1",
                 valueInputOption='USER_ENTERED',
-                body=body
+                body={'values': values}
             ).execute()
         return True
-    except Exception as e:
-        st.error(f"Error updating: {str(e)}")
+    except:
         return False
 
-def create_sheet_if_not_exists(service, sheet_name):
-    """Create a sheet if it doesn't exist"""
+def create_sheet_if_not_exists(service, sheet_name, headers):
+    """Create sheet with headers if not exists"""
     try:
         spreadsheet = service.spreadsheets().get(
             spreadsheetId=get_sheet_id()
         ).execute()
-        
         sheets = spreadsheet.get('sheets', [])
         sheet_names = [sheet['properties']['title'] for sheet in sheets]
         
@@ -134,6 +114,9 @@ def create_sheet_if_not_exists(service, sheet_name):
                 spreadsheetId=get_sheet_id(),
                 body=body
             ).execute()
+            
+            df = pd.DataFrame(columns=headers)
+            update_data(service, sheet_name, df)
             return True
         return True
     except Exception as e:
@@ -143,20 +126,16 @@ def create_sheet_if_not_exists(service, sheet_name):
 # ==================== INIT ====================
 
 def init_sheets(service):
-    """Initialize all sheets with headers"""
+    """Initialize sheets with headers"""
     try:
         sheets = {
             'Products': ['Product ID', 'Product Name', 'Rate', 'Stock'],
-            'Parties': ['Party ID', 'Party Name', 'Mobile'],
+            'Parties': ['Party ID', 'Party Name', 'Mobile', 'Address'],
             'Sales': ['Invoice No', 'Date', 'Party', 'Total', 'Status']
         }
         
         for sheet_name, headers in sheets.items():
-            create_sheet_if_not_exists(service, sheet_name)
-            df = get_data(service, sheet_name)
-            if df.empty:
-                df = pd.DataFrame(columns=headers)
-                update_data(service, sheet_name, df)
+            create_sheet_if_not_exists(service, sheet_name, headers)
         
         # Add default products
         products = get_data(service, 'Products')
@@ -169,7 +148,6 @@ def init_sheets(service):
             ]
             df = pd.DataFrame(defaults, columns=['Product ID', 'Product Name', 'Rate', 'Stock'])
             update_data(service, 'Products', df)
-            st.success("✅ Default products added!")
         
         return True
     except Exception as e:
@@ -181,7 +159,6 @@ def get_next_invoice(service):
     sales = get_data(service, 'Sales')
     if sales.empty or 'Invoice No' not in sales.columns:
         return "INV001"
-    
     try:
         invoices = sales['Invoice No'].astype(str).tolist()
         nums = []
@@ -203,16 +180,13 @@ def main():
     st.sidebar.title("📋 Menu")
     st.sidebar.markdown("---")
     
-    # Connect to Google Sheets
+    # Connect
     service = get_sheets_service()
-    
     if service:
-        if init_sheets(service):
-            st.sidebar.success("✅ Connected to Google Sheets")
-            st.sidebar.info("📊 Spreadsheet: Detergent Billing")
+        init_sheets(service)
+        st.sidebar.success("✅ Connected to Google Sheets")
     else:
-        st.sidebar.warning("⚠️ Offline Mode")
-        st.sidebar.info("Please upload Service Account JSON")
+        st.sidebar.warning("⚠️ Check your secrets.toml file")
     
     # Menu
     menu = st.sidebar.radio(
@@ -252,7 +226,6 @@ def main():
         
         if not service:
             st.error("❌ Not connected to Google Sheets")
-            st.info("Please upload your Service Account JSON file in the sidebar")
             return
         
         products = get_data(service, 'Products')
@@ -264,11 +237,11 @@ def main():
                 st.dataframe(products, use_container_width=True)
                 
                 st.subheader("Quick Stock Update")
-                col1, col2 = st.columns(2)
+                col1, col2 = st.columns([2, 1])
                 with col1:
                     selected = st.selectbox("Select Product", products['Product Name'].tolist())
                 with col2:
-                    change = st.number_input("Quantity Change (+/-)", value=0, step=1)
+                    change = st.number_input("Change (+/-)", value=0, step=1)
                     if st.button("Update Stock"):
                         if change != 0:
                             idx = products[products['Product Name'] == selected].index[0]
@@ -304,7 +277,6 @@ def main():
         
         if not service:
             st.error("❌ Not connected to Google Sheets")
-            st.info("Please upload your Service Account JSON file in the sidebar")
             return
         
         parties = get_data(service, 'Parties')
@@ -314,27 +286,57 @@ def main():
         with tab1:
             if not parties.empty:
                 st.dataframe(parties, use_container_width=True)
+                
+                if 'Party Name' in parties.columns:
+                    st.subheader("Party Details")
+                    selected_party = st.selectbox("Select Party", parties['Party Name'].tolist())
+                    if selected_party:
+                        party_data = parties[parties['Party Name'] == selected_party].iloc[0]
+                        st.write(f"**Party ID:** {party_data.get('Party ID', '')}")
+                        st.write(f"**Mobile:** {party_data.get('Mobile', '')}")
+                        st.write(f"**Address:** {party_data.get('Address', '')}")
             else:
-                st.info("No parties available")
+                st.info("No parties added yet")
         
         with tab2:
-            with st.form("add_party"):
+            with st.form("add_party_form"):
                 col1, col2 = st.columns(2)
                 with col1:
-                    name = st.text_input("Party Name *")
+                    party_name = st.text_input("Party Name *")
                     mobile = st.text_input("Mobile Number")
                 with col2:
-                    address = st.text_area("Address (Optional)")
+                    address = st.text_area("Address")
                 
-                if st.form_submit_button("Add Party"):
-                    if name:
-                        parties = get_data(service, 'Parties')
-                        party_id = f"PT{len(parties)+1:03d}" if not parties.empty else "PT001"
-                        add_row(service, 'Parties', [party_id, name, mobile, address])
-                        st.success(f"✅ Party '{name}' added!")
-                        st.rerun()
+                submitted = st.form_submit_button("Add Party")
+                
+                if submitted:
+                    if not party_name:
+                        st.error("❌ Party Name is required!")
                     else:
-                        st.error("Party Name is required")
+                        parties = get_data(service, 'Parties')
+                        if parties.empty:
+                            party_id = "PT001"
+                        else:
+                            ids = parties['Party ID'].astype(str).tolist()
+                            nums = []
+                            for pid in ids:
+                                if pid and pid.startswith('PT'):
+                                    try:
+                                        num = int(pid.replace('PT', ''))
+                                        nums.append(num)
+                                    except:
+                                        pass
+                            next_num = max(nums) + 1 if nums else 1
+                            party_id = f"PT{next_num:03d}"
+                        
+                        success = add_row(service, 'Parties', [party_id, party_name, mobile, address])
+                        
+                        if success:
+                            st.success(f"✅ Party '{party_name}' added successfully!")
+                            st.info(f"**Party ID:** {party_id}")
+                            st.rerun()
+                        else:
+                            st.error("❌ Failed to add party. Please try again.")
 
     # ==================== BILLING ====================
     elif menu == "🧾 Billing":
@@ -342,7 +344,6 @@ def main():
         
         if not service:
             st.error("❌ Not connected to Google Sheets")
-            st.info("Please upload your Service Account JSON file in the sidebar")
             return
         
         products = get_data(service, 'Products')
@@ -395,7 +396,6 @@ def main():
             else:
                 st.info("🛒 Cart is empty")
         
-        # Create Invoice
         st.markdown("---")
         st.subheader("📄 Create Invoice")
         
@@ -409,7 +409,6 @@ def main():
                 invoice_no = get_next_invoice(service)
                 total = sum(item['Amount'] for item in st.session_state.cart)
                 
-                # Save invoice
                 add_row(service, 'Sales', [
                     invoice_no,
                     datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -418,7 +417,6 @@ def main():
                     'Unpaid'
                 ])
                 
-                # Update stock
                 for item in st.session_state.cart:
                     idx = products[products['Product Name'] == item['Product']].index[0]
                     products.loc[idx, 'Stock'] = int(products.loc[idx, 'Stock']) - item['Qty']
@@ -426,7 +424,6 @@ def main():
                 
                 st.success(f"✅ Invoice {invoice_no} generated! Total: ₹{total:,.2f}")
                 
-                # Show receipt
                 st.markdown("---")
                 st.subheader("🧾 Receipt")
                 receipt = f"""
