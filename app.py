@@ -1,5 +1,5 @@
 """
-Simple Detergent Billing App - With Parties Working
+Simple Detergent Billing App - With Auto-Refresh
 Products: Dishwash Liquid 1L (₹120), Detergent Powder 1kg (₹120), 
          Dishwash Liquid 7+1 (₹840), Detergent Powder 7+1 (₹840)
 """
@@ -115,9 +115,20 @@ def create_sheet_if_not_exists(service, sheet_name, headers):
                 body=body
             ).execute()
             
+            # Add headers
             df = pd.DataFrame(columns=headers)
             update_data(service, sheet_name, df)
             return True
+        else:
+            # Check if headers exist, if not add them
+            df = get_data(service, sheet_name)
+            if df.empty:
+                df = pd.DataFrame(columns=headers)
+                update_data(service, sheet_name, df)
+            elif list(df.columns) != headers:
+                # Headers don't match, update them
+                df = pd.DataFrame(columns=headers)
+                update_data(service, sheet_name, df)
         return True
     except Exception as e:
         st.error(f"Error creating sheet: {str(e)}")
@@ -130,7 +141,7 @@ def init_sheets(service):
     try:
         sheets = {
             'Products': ['Product ID', 'Product Name', 'Rate', 'Stock'],
-            'Parties': ['Party ID', 'Party Name', 'Mobile', 'Address'],
+            'Parties': ['Party ID', 'Party Name', 'Mobile', 'Address', 'Opening Balance', 'GST No'],
             'Sales': ['Invoice No', 'Date', 'Party', 'Total', 'Status']
         }
         
@@ -228,6 +239,7 @@ def main():
             st.error("❌ Not connected to Google Sheets")
             return
         
+        # Force refresh by getting data fresh
         products = get_data(service, 'Products')
         
         tab1, tab2 = st.tabs(["Manage Products", "Add Product"])
@@ -279,6 +291,7 @@ def main():
             st.error("❌ Not connected to Google Sheets")
             return
         
+        # Force refresh by getting data fresh
         parties = get_data(service, 'Parties')
         
         tab1, tab2 = st.tabs(["Manage Parties", "Add Party"])
@@ -287,6 +300,7 @@ def main():
             if not parties.empty:
                 st.dataframe(parties, use_container_width=True)
                 
+                # Show party details
                 if 'Party Name' in parties.columns:
                     st.subheader("Party Details")
                     selected_party = st.selectbox("Select Party", parties['Party Name'].tolist())
@@ -295,6 +309,8 @@ def main():
                         st.write(f"**Party ID:** {party_data.get('Party ID', '')}")
                         st.write(f"**Mobile:** {party_data.get('Mobile', '')}")
                         st.write(f"**Address:** {party_data.get('Address', '')}")
+                        st.write(f"**Opening Balance:** {party_data.get('Opening Balance', '')}")
+                        st.write(f"**GST No:** {party_data.get('GST No', '')}")
             else:
                 st.info("No parties added yet")
         
@@ -304,8 +320,10 @@ def main():
                 with col1:
                     party_name = st.text_input("Party Name *")
                     mobile = st.text_input("Mobile Number")
+                    opening_balance = st.number_input("Opening Balance (₹)", min_value=0.0, step=100.0)
                 with col2:
                     address = st.text_area("Address")
+                    gst_no = st.text_input("GST No (Optional)")
                 
                 submitted = st.form_submit_button("Add Party")
                 
@@ -313,10 +331,12 @@ def main():
                     if not party_name:
                         st.error("❌ Party Name is required!")
                     else:
+                        # Get current parties to generate ID
                         parties = get_data(service, 'Parties')
                         if parties.empty:
                             party_id = "PT001"
                         else:
+                            # Find max ID
                             ids = parties['Party ID'].astype(str).tolist()
                             nums = []
                             for pid in ids:
@@ -329,11 +349,14 @@ def main():
                             next_num = max(nums) + 1 if nums else 1
                             party_id = f"PT{next_num:03d}"
                         
-                        success = add_row(service, 'Parties', [party_id, party_name, mobile, address])
+                        # Add row with correct column order
+                        # Columns: Party ID, Party Name, Mobile, Address, Opening Balance, GST No
+                        success = add_row(service, 'Parties', [party_id, party_name, mobile, address, opening_balance, gst_no])
                         
                         if success:
                             st.success(f"✅ Party '{party_name}' added successfully!")
                             st.info(f"**Party ID:** {party_id}")
+                            # Force refresh by rerunning the app
                             st.rerun()
                         else:
                             st.error("❌ Failed to add party. Please try again.")
@@ -346,6 +369,7 @@ def main():
             st.error("❌ Not connected to Google Sheets")
             return
         
+        # Force refresh data
         products = get_data(service, 'Products')
         parties = get_data(service, 'Parties')
         
@@ -396,6 +420,7 @@ def main():
             else:
                 st.info("🛒 Cart is empty")
         
+        # Create Invoice
         st.markdown("---")
         st.subheader("📄 Create Invoice")
         
@@ -409,6 +434,8 @@ def main():
                 invoice_no = get_next_invoice(service)
                 total = sum(item['Amount'] for item in st.session_state.cart)
                 
+                # Save invoice
+                # Columns: Invoice No, Date, Party, Total, Status
                 add_row(service, 'Sales', [
                     invoice_no,
                     datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -417,6 +444,7 @@ def main():
                     'Unpaid'
                 ])
                 
+                # Update stock
                 for item in st.session_state.cart:
                     idx = products[products['Product Name'] == item['Product']].index[0]
                     products.loc[idx, 'Stock'] = int(products.loc[idx, 'Stock']) - item['Qty']
@@ -424,6 +452,7 @@ def main():
                 
                 st.success(f"✅ Invoice {invoice_no} generated! Total: ₹{total:,.2f}")
                 
+                # Show receipt
                 st.markdown("---")
                 st.subheader("🧾 Receipt")
                 receipt = f"""
