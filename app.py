@@ -1,5 +1,5 @@
 """
-Simple Detergent Billing App - Safe Version (Handles Missing Data)
+Simple Detergent Billing App - Fixed Stock Update
 """
 
 import streamlit as st
@@ -39,7 +39,7 @@ def get_sheet_id():
     return "1jaat8u_k7rQyqhPcdL4zmUkkuG8gpwwk6z-Tvv2SMrQ"
 
 def get_data(service, sheet_name):
-    """Get data from sheet - SAFE READ ONLY"""
+    """Get data from sheet"""
     try:
         result = service.spreadsheets().values().get(
             spreadsheetId=get_sheet_id(),
@@ -74,19 +74,15 @@ def add_row_only(service, sheet_name, row_data):
 def create_sheet_if_not_exists(service, sheet_name, headers):
     """Create sheet ONLY if it doesn't exist"""
     try:
-        # Check if sheet exists
         spreadsheet = service.spreadsheets().get(
             spreadsheetId=get_sheet_id()
         ).execute()
         sheets = spreadsheet.get('sheets', [])
         sheet_names = [sheet['properties']['title'] for sheet in sheets]
         
-        # If sheet exists, DON'T overwrite
         if sheet_name in sheet_names:
-            # Check if headers exist
             df = get_data(service, sheet_name)
             if df.empty:
-                # Sheet exists but empty, add headers
                 values = [headers]
                 service.spreadsheets().values().update(
                     spreadsheetId=get_sheet_id(),
@@ -96,7 +92,6 @@ def create_sheet_if_not_exists(service, sheet_name, headers):
                 ).execute()
             return True
         
-        # Only create if it doesn't exist
         body = {
             'requests': [{
                 'addSheet': {
@@ -109,7 +104,6 @@ def create_sheet_if_not_exists(service, sheet_name, headers):
             body=body
         ).execute()
         
-        # Add headers to new sheet
         values = [headers]
         service.spreadsheets().values().update(
             spreadsheetId=get_sheet_id(),
@@ -125,7 +119,7 @@ def create_sheet_if_not_exists(service, sheet_name, headers):
 # ==================== INIT ====================
 
 def init_sheets(service):
-    """Initialize sheets - ONLY CREATE IF MISSING"""
+    """Initialize sheets"""
     try:
         sheets = {
             'Products': ['Product ID', 'Product Name', 'Rate', 'Stock'],
@@ -136,14 +130,13 @@ def init_sheets(service):
         for sheet_name, headers in sheets.items():
             create_sheet_if_not_exists(service, sheet_name, headers)
         
-        # ONLY add default products if Products sheet is empty
         products = get_data(service, 'Products')
         if products.empty:
             defaults = [
-                ['P001', 'Dishwash Liquid 1L', 120, 100],
-                ['P002', 'Detergent Powder 1kg', 120, 100],
-                ['P003', 'Dishwash Liquid 7+1', 840, 50],
-                ['P004', 'Detergent Powder 7+1', 840, 50]
+                ['P001', 'Dishwash Liquid 1L', '120', '100'],
+                ['P002', 'Detergent Powder 1kg', '120', '100'],
+                ['P003', 'Dishwash Liquid 7+1', '840', '50'],
+                ['P004', 'Detergent Powder 7+1', '840', '50']
             ]
             for product in defaults:
                 add_row_only(service, 'Products', product)
@@ -188,31 +181,58 @@ def get_next_party_id(service):
         return "PT001"
 
 def update_stock(service, product_name, change):
-    """Update stock - ONLY UPDATE, NOT OVERWRITE"""
-    products = get_data(service, 'Products')
-    if products.empty:
-        return False
-    
-    idx = products[products['Product Name'] == product_name].index
-    if idx.empty:
-        return False
-    
-    current_stock = int(products.loc[idx[0], 'Stock'])
-    products.loc[idx[0], 'Stock'] = current_stock + change
-    
-    # Update only the specific cell
+    """Update stock - handles text/string values"""
     try:
-        row_num = idx[0] + 2  # +2 because header is row 1 and index is 0-based
+        products = get_data(service, 'Products')
+        if products.empty:
+            return False
+        
+        idx = products[products['Product Name'] == product_name].index
+        if idx.empty:
+            return False
+        
+        # Get current stock - handle both string and number
+        current_stock_str = str(products.loc[idx[0], 'Stock']).strip()
+        try:
+            current_stock = int(float(current_stock_str))
+        except:
+            current_stock = 0
+        
+        new_stock = current_stock + change
+        
+        # Find the row number in Google Sheets (header is row 1, so data starts at row 2)
+        row_num = idx[0] + 2
+        
+        # Update only the specific cell
         service.spreadsheets().values().update(
             spreadsheetId=get_sheet_id(),
             range=f"Products!D{row_num}",
             valueInputOption='USER_ENTERED',
-            body={'values': [[str(products.loc[idx[0], 'Stock'])]]}
+            body={'values': [[str(new_stock)]]}
         ).execute()
+        
         return True
     except Exception as e:
         st.error(f"Error updating stock: {str(e)}")
         return False
+
+def safe_int(value):
+    """Safely convert to integer"""
+    try:
+        if value is None or value == '':
+            return 0
+        return int(float(str(value).strip()))
+    except:
+        return 0
+
+def safe_float(value):
+    """Safely convert to float"""
+    try:
+        if value is None or value == '':
+            return 0.0
+        return float(str(value).strip())
+    except:
+        return 0.0
 
 # ==================== MAIN APP ====================
 
@@ -261,7 +281,13 @@ def main():
         col1, col2, col3 = st.columns(3)
         col1.metric("📦 Products", len(products))
         col2.metric("🏪 Parties", len(parties))
-        col3.metric("💰 Total Sales", f"₹{sales['Total'].astype(float).sum():,.2f}" if not sales.empty and 'Total' in sales.columns else "₹0")
+        
+        # Safely calculate total sales
+        total_sales = 0
+        if not sales.empty and 'Total' in sales.columns:
+            for val in sales['Total']:
+                total_sales += safe_float(val)
+        col3.metric("💰 Total Sales", f"₹{total_sales:,.2f}")
         
         st.subheader("📄 Recent Invoices")
         if not sales.empty:
@@ -283,7 +309,14 @@ def main():
         
         with tab1:
             if not products.empty:
-                st.dataframe(products, use_container_width=True)
+                # Convert stock to numbers for display
+                display_products = products.copy()
+                if 'Stock' in display_products.columns:
+                    display_products['Stock'] = display_products['Stock'].apply(safe_int)
+                if 'Rate' in display_products.columns:
+                    display_products['Rate'] = display_products['Rate'].apply(safe_float)
+                
+                st.dataframe(display_products, use_container_width=True)
                 
                 st.subheader("Quick Stock Update")
                 col1, col2 = st.columns([2, 1])
@@ -312,7 +345,7 @@ def main():
                     if name and rate > 0:
                         products = get_data(service, 'Products')
                         product_id = f"P{len(products)+1:03d}"
-                        add_row_only(service, 'Products', [product_id, name, rate, stock])
+                        add_row_only(service, 'Products', [product_id, name, str(rate), str(stock)])
                         st.success(f"✅ Product '{name}' added!")
                         st.rerun()
                     else:
@@ -337,16 +370,14 @@ def main():
                 st.warning("⚠️ No parties found in Google Sheets")
                 st.info("Go to 'Add Party' tab to add a new party")
             else:
-                # Check if required columns exist
                 if 'Party Name' not in parties.columns:
-                    st.error("❌ 'Party Name' column not found! Please check your Google Sheet.")
+                    st.error("❌ 'Party Name' column not found!")
                     st.write("Expected columns:", ['Party ID', 'Party Name', 'Mobile', 'WhatsApp', 'Address', 'Opening Balance', 'GST No'])
                     st.write("Current columns:", list(parties.columns))
                 else:
                     st.success(f"✅ Found {len(parties)} parties")
                     st.dataframe(parties, use_container_width=True)
                     
-                    # Show party details
                     st.subheader("📌 Party Details")
                     selected_party = st.selectbox("Select a party", parties['Party Name'].tolist())
                     if selected_party:
@@ -357,7 +388,7 @@ def main():
                             st.write(f"**Mobile:** {party_data.get('Mobile', 'N/A')}")
                         with col2:
                             st.write(f"**WhatsApp:** {party_data.get('WhatsApp', 'N/A')}")
-                            st.write(f"**Opening Balance:** ₹{party_data.get('Opening Balance', 0)}")
+                            st.write(f"**Opening Balance:** ₹{safe_float(party_data.get('Opening Balance', 0))}")
                         with col3:
                             st.write(f"**GST No:** {party_data.get('GST No', 'N/A')}")
                         st.write(f"**Address:** {party_data.get('Address', 'N/A')}")
@@ -390,7 +421,7 @@ def main():
                             mobile,
                             whatsapp,
                             address,
-                            opening_balance,
+                            str(opening_balance),
                             gst_no
                         ]
                         
@@ -424,11 +455,9 @@ def main():
             st.warning("⚠️ No parties! Add parties first.")
             return
         
-        # Check if 'Party Name' exists
         if 'Party Name' not in parties.columns:
             st.error("❌ 'Party Name' column not found in Parties sheet!")
             st.write("Current columns:", list(parties.columns))
-            st.info("Please check your Google Sheet and make sure the Parties sheet has the correct headers.")
             return
         
         col1, col2 = st.columns([2, 1])
@@ -441,8 +470,8 @@ def main():
             
             if selected:
                 product = products[products['Product Name'] == selected].iloc[0]
-                stock = int(product['Stock'])
-                rate = float(product['Rate'])
+                stock = safe_int(product['Stock'])
+                rate = safe_float(product['Rate'])
                 st.info(f"📦 Stock: {stock} | 💰 Rate: ₹{rate:.2f}")
                 
                 qty = st.number_input("Quantity", min_value=1, max_value=stock, step=1)
@@ -487,12 +516,13 @@ def main():
                     invoice_no,
                     datetime.now().strftime("%Y-%m-%d %H:%M"),
                     party,
-                    total,
+                    str(total),
                     'Unpaid'
                 ])
                 
                 for item in st.session_state.cart:
-                    update_stock(service, item['Product'], -item['Qty'])
+                    if not update_stock(service, item['Product'], -item['Qty']):
+                        st.warning(f"⚠️ Could not update stock for {item['Product']}")
                 
                 st.success(f"✅ Invoice {invoice_no} generated! Total: ₹{total:,.2f}")
                 
