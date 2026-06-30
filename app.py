@@ -1,14 +1,13 @@
 """
-Simple Detergent Billing App - With Caching to Avoid Quota Limits
+Complete Detergent Billing App - With Sales Report & Cash Receipt
 """
 
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-import time
 
 # ==================== PAGE CONFIG ====================
 st.set_page_config(
@@ -39,12 +38,9 @@ def get_sheets_service():
 def get_sheet_id():
     return "1jaat8u_k7rQyqhPcdL4zmUkkuG8gpwwk6z-Tvv2SMrQ"
 
-# ==================== CACHED DATA FUNCTIONS ====================
-
-@st.cache_data(ttl=60)  # Cache for 60 seconds to reduce API calls
+@st.cache_data(ttl=60)
 def get_data_cached(service_key, sheet_name):
     """Get data from sheet with caching"""
-    # We can't cache the service object, so we recreate it
     service = get_sheets_service()
     if not service:
         return pd.DataFrame()
@@ -63,19 +59,15 @@ def get_data_cached(service_key, sheet_name):
         return df
     except Exception as e:
         if "429" in str(e):
-            st.warning("⏳ Rate limit reached. Please wait a moment and try again.")
-            # Return cached data if available
+            st.warning("⏳ Rate limit reached. Please wait a moment.")
             return pd.DataFrame()
-        st.error(f"Error reading {sheet_name}: {str(e)}")
         return pd.DataFrame()
 
 def get_data(service, sheet_name):
-    """Get data - uses cache"""
-    # Use a dummy key to trigger caching
     return get_data_cached("cached", sheet_name)
 
 def add_row_only(service, sheet_name, row_data):
-    """ONLY ADD - NEVER OVERWRITE"""
+    """Add row to sheet"""
     try:
         body = {'values': [row_data]}
         result = service.spreadsheets().values().append(
@@ -84,7 +76,6 @@ def add_row_only(service, sheet_name, row_data):
             valueInputOption='USER_ENTERED',
             body=body
         ).execute()
-        # Clear cache after adding
         st.cache_data.clear()
         return result.get('updates', {}).get('updatedRows', 0) > 0
     except Exception as e:
@@ -92,7 +83,7 @@ def add_row_only(service, sheet_name, row_data):
         return False
 
 def create_sheet_if_not_exists(service, sheet_name, headers):
-    """Create sheet ONLY if it doesn't exist"""
+    """Create sheet if not exists"""
     try:
         spreadsheet = service.spreadsheets().get(
             spreadsheetId=get_sheet_id()
@@ -144,7 +135,9 @@ def init_sheets(service):
         sheets = {
             'Products': ['Product ID', 'Product Name', 'Rate', 'Stock'],
             'Parties': ['Party ID', 'Party Name', 'Mobile', 'WhatsApp', 'Address', 'Opening Balance', 'GST No'],
-            'Sales': ['Invoice No', 'Date', 'Party', 'Total', 'Status']
+            'Sales': ['Invoice No', 'Date', 'Party', 'Total', 'Status'],
+            'Sales_Items': ['Invoice No', 'Product ID', 'Product Name', 'Qty', 'Rate', 'Amount'],
+            'Receipts': ['Receipt No', 'Date', 'Party', 'Invoice No', 'Amount', 'Payment Mode', 'Remarks']
         }
         
         for sheet_name, headers in sheets.items():
@@ -183,6 +176,23 @@ def get_next_invoice(service):
     except:
         return "INV001"
 
+def get_next_receipt_no(service):
+    """Generate next receipt number"""
+    receipts = get_data(service, 'Receipts')
+    if receipts.empty or 'Receipt No' not in receipts.columns:
+        return "REC001"
+    try:
+        recs = receipts['Receipt No'].astype(str).tolist()
+        nums = []
+        for rec in recs:
+            if rec and rec.startswith('REC'):
+                num = int(rec.replace('REC', ''))
+                nums.append(num)
+        next_num = max(nums) + 1 if nums else 1
+        return f"REC{next_num:03d}"
+    except:
+        return "REC001"
+
 def get_next_party_id(service):
     """Generate next party ID"""
     parties = get_data(service, 'Parties')
@@ -201,7 +211,7 @@ def get_next_party_id(service):
         return "PT001"
 
 def update_stock(service, product_name, change):
-    """Update stock - handles text/string values"""
+    """Update stock"""
     try:
         products = get_data(service, 'Products')
         if products.empty:
@@ -227,15 +237,45 @@ def update_stock(service, product_name, change):
             body={'values': [[str(new_stock)]]}
         ).execute()
         
-        # Clear cache after updating
         st.cache_data.clear()
         return True
     except Exception as e:
         st.error(f"Error updating stock: {str(e)}")
         return False
 
+def update_invoice_status(service, invoice_no):
+    """Update invoice status based on payments"""
+    sales = get_data(service, 'Sales')
+    receipts = get_data(service, 'Receipts')
+    
+    idx = sales[sales['Invoice No'] == invoice_no].index
+    if idx.empty:
+        return
+    
+    total = safe_float(sales.loc[idx[0], 'Total'])
+    paid = 0
+    
+    if not receipts.empty:
+        paid = receipts[receipts['Invoice No'] == invoice_no]['Amount'].apply(safe_float).sum()
+    
+    if paid >= total:
+        status = 'Paid'
+    elif paid > 0:
+        status = 'Partially Paid'
+    else:
+        status = 'Unpaid'
+    
+    # Update status in sheet
+    row_num = idx[0] + 2
+    service.spreadsheets().values().update(
+        spreadsheetId=get_sheet_id(),
+        range=f"Sales!E{row_num}",
+        valueInputOption='USER_ENTERED',
+        body={'values': [[status]]}
+    ).execute()
+    st.cache_data.clear()
+
 def safe_int(value):
-    """Safely convert to integer"""
     try:
         if value is None or value == '':
             return 0
@@ -244,7 +284,6 @@ def safe_int(value):
         return 0
 
 def safe_float(value):
-    """Safely convert to float"""
     try:
         if value is None or value == '':
             return 0.0
@@ -255,7 +294,7 @@ def safe_float(value):
 # ==================== MAIN APP ====================
 
 def main():
-    st.title("🧺 Simple Detergent Billing")
+    st.title("🧺 Detergent Billing System")
     
     # Sidebar
     st.sidebar.title("📋 Menu")
@@ -266,23 +305,22 @@ def main():
     if service:
         try:
             test = service.spreadsheets().get(spreadsheetId=get_sheet_id()).execute()
-            st.sidebar.success(f"✅ Connected to: {test.get('properties', {}).get('title', 'Unknown')}")
+            st.sidebar.success(f"✅ Connected")
             init_sheets(service)
             st.sidebar.success("✅ Sheets ready")
-            st.sidebar.info("⏳ Data cached for 60 seconds")
         except Exception as e:
             if "429" in str(e):
                 st.sidebar.warning("⏳ Rate limit reached. Please wait.")
             else:
-                st.sidebar.error(f"❌ Can't access spreadsheet: {str(e)}")
-                st.sidebar.info("💡 Share the sheet with: detergent-billing@detergent-billing.iam.gserviceaccount.com")
+                st.sidebar.error(f"❌ Error: {str(e)[:50]}...")
     else:
-        st.sidebar.warning("⚠️ Check your secrets.toml file")
+        st.sidebar.warning("⚠️ Check secrets.toml")
     
     # Menu
     menu = st.sidebar.radio(
         "Navigate",
-        ["📊 Dashboard", "📦 Products", "🏪 Parties", "🧾 Billing"]
+        ["📊 Dashboard", "📦 Products", "🏪 Parties", "🧾 Billing", 
+         "💰 Cash Receipt", "📈 Daily Sales Report"]
     )
     
     st.sidebar.markdown("---")
@@ -299,8 +337,9 @@ def main():
         products = get_data(service, 'Products') if service else pd.DataFrame()
         sales = get_data(service, 'Sales') if service else pd.DataFrame()
         parties = get_data(service, 'Parties') if service else pd.DataFrame()
+        receipts = get_data(service, 'Receipts') if service else pd.DataFrame()
         
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         col1.metric("📦 Products", len(products))
         col2.metric("🏪 Parties", len(parties))
         
@@ -309,6 +348,12 @@ def main():
             for val in sales['Total']:
                 total_sales += safe_float(val)
         col3.metric("💰 Total Sales", f"₹{total_sales:,.2f}")
+        
+        total_receipts = 0
+        if not receipts.empty and 'Amount' in receipts.columns:
+            for val in receipts['Amount']:
+                total_receipts += safe_float(val)
+        col4.metric("💳 Total Receipts", f"₹{total_receipts:,.2f}")
         
         st.subheader("📄 Recent Invoices")
         if not sales.empty:
@@ -321,7 +366,7 @@ def main():
         st.header("📦 Product Master")
         
         if not service:
-            st.error("❌ Not connected to Google Sheets")
+            st.error("❌ Not connected")
             return
         
         products = get_data(service, 'Products')
@@ -347,7 +392,7 @@ def main():
                     if st.button("Update Stock"):
                         if change != 0:
                             if update_stock(service, selected, change):
-                                st.success(f"✅ Stock updated! {selected}: {change}")
+                                st.success(f"✅ Stock updated!")
                                 st.rerun()
             else:
                 st.info("No products available")
@@ -368,15 +413,13 @@ def main():
                         add_row_only(service, 'Products', [product_id, name, str(rate), str(stock)])
                         st.success(f"✅ Product '{name}' added!")
                         st.rerun()
-                    else:
-                        st.error("Please fill all required fields")
 
     # ==================== PARTIES ====================
     elif menu == "🏪 Parties":
         st.header("🏪 Party Master")
         
         if not service:
-            st.error("❌ Not connected to Google Sheets")
+            st.error("❌ Not connected")
             return
         
         parties = get_data(service, 'Parties')
@@ -384,106 +427,61 @@ def main():
         tab1, tab2 = st.tabs(["Manage Parties", "Add Party"])
         
         with tab1:
-            st.subheader("📋 All Parties")
-            
             if parties.empty:
-                st.warning("⚠️ No parties found in Google Sheets")
-                st.info("Go to 'Add Party' tab to add a new party")
+                st.info("No parties added yet")
             else:
                 if 'Party Name' not in parties.columns:
                     st.error("❌ 'Party Name' column not found!")
-                    st.write("Expected columns:", ['Party ID', 'Party Name', 'Mobile', 'WhatsApp', 'Address', 'Opening Balance', 'GST No'])
-                    st.write("Current columns:", list(parties.columns))
                 else:
-                    st.success(f"✅ Found {len(parties)} parties")
                     st.dataframe(parties, use_container_width=True)
-                    
-                    st.subheader("📌 Party Details")
-                    selected_party = st.selectbox("Select a party", parties['Party Name'].tolist())
-                    if selected_party:
-                        party_data = parties[parties['Party Name'] == selected_party].iloc[0]
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.write(f"**Party ID:** {party_data.get('Party ID', 'N/A')}")
-                            st.write(f"**Mobile:** {party_data.get('Mobile', 'N/A')}")
-                        with col2:
-                            st.write(f"**WhatsApp:** {party_data.get('WhatsApp', 'N/A')}")
-                            st.write(f"**Opening Balance:** ₹{safe_float(party_data.get('Opening Balance', 0))}")
-                        with col3:
-                            st.write(f"**GST No:** {party_data.get('GST No', 'N/A')}")
-                        st.write(f"**Address:** {party_data.get('Address', 'N/A')}")
         
         with tab2:
-            st.subheader("➕ Add New Party")
-            
             with st.form("add_party_form"):
                 col1, col2 = st.columns(2)
                 with col1:
-                    party_name = st.text_input("Party Name *", placeholder="e.g., Rajesh Store")
-                    mobile = st.text_input("Mobile Number", placeholder="e.g., 9876543210")
-                    whatsapp = st.text_input("WhatsApp Number", placeholder="e.g., 9876543210")
-                    opening_balance = st.number_input("Opening Balance (₹)", min_value=0.0, step=100.0, value=0.0)
+                    party_name = st.text_input("Party Name *")
+                    mobile = st.text_input("Mobile Number")
+                    whatsapp = st.text_input("WhatsApp Number")
                 with col2:
-                    address = st.text_area("Address", placeholder="Enter full address")
-                    gst_no = st.text_input("GST No (Optional)", placeholder="e.g., GST123456")
+                    address = st.text_area("Address")
+                    opening_balance = st.number_input("Opening Balance (₹)", min_value=0.0, step=100.0, value=0.0)
+                    gst_no = st.text_input("GST No (Optional)")
                 
-                submitted = st.form_submit_button("✅ Add Party", type="primary")
-                
-                if submitted:
-                    if not party_name:
-                        st.error("❌ Party Name is required!")
-                    else:
+                if st.form_submit_button("Add Party"):
+                    if party_name:
                         party_id = get_next_party_id(service)
-                        
-                        row_data = [
-                            party_id,
-                            party_name,
-                            mobile,
-                            whatsapp,
-                            address,
-                            str(opening_balance),
-                            gst_no
-                        ]
-                        
-                        st.info(f"📝 Adding: {party_name} (ID: {party_id})")
-                        
-                        success = add_row_only(service, 'Parties', row_data)
-                        
-                        if success:
-                            st.success(f"✅ Party '{party_name}' added successfully!")
-                            st.balloons()
+                        row_data = [party_id, party_name, mobile, whatsapp, address, str(opening_balance), gst_no]
+                        if add_row_only(service, 'Parties', row_data):
+                            st.success(f"✅ Party '{party_name}' added!")
                             st.rerun()
-                        else:
-                            st.error("❌ Failed to add party.")
 
     # ==================== BILLING ====================
     elif menu == "🧾 Billing":
         st.header("🧾 Sales Billing")
         
         if not service:
-            st.error("❌ Not connected to Google Sheets")
+            st.error("❌ Not connected")
             return
         
         products = get_data(service, 'Products')
         parties = get_data(service, 'Parties')
         
         if products.empty:
-            st.warning("⚠️ No products! Add products first.")
+            st.warning("⚠️ No products!")
             return
         
         if parties.empty:
-            st.warning("⚠️ No parties! Add parties first.")
+            st.warning("⚠️ No parties!")
             return
         
         if 'Party Name' not in parties.columns:
-            st.error("❌ 'Party Name' column not found in Parties sheet!")
-            st.write("Current columns:", list(parties.columns))
+            st.error("❌ 'Party Name' column not found!")
             return
         
         col1, col2 = st.columns([2, 1])
         
         with col1:
-            st.subheader("🛒 Add Items to Cart")
+            st.subheader("🛒 Add Items")
             
             product_names = products['Product Name'].tolist()
             selected = st.selectbox("Select Product", product_names)
@@ -492,11 +490,13 @@ def main():
                 product = products[products['Product Name'] == selected].iloc[0]
                 stock = safe_int(product['Stock'])
                 rate = safe_float(product['Rate'])
+                product_id = product['Product ID']
                 st.info(f"📦 Stock: {stock} | 💰 Rate: ₹{rate:.2f}")
                 
                 qty = st.number_input("Quantity", min_value=1, max_value=stock, step=1)
-                if st.button("➕ Add to Cart", type="primary"):
+                if st.button("➕ Add to Cart"):
                     st.session_state.cart.append({
+                        'Product ID': product_id,
                         'Product': selected,
                         'Rate': rate,
                         'Qty': qty,
@@ -511,13 +511,12 @@ def main():
                 cart_df = pd.DataFrame(st.session_state.cart)
                 st.dataframe(cart_df[['Product', 'Qty', 'Rate', 'Amount']], use_container_width=True)
                 total = cart_df['Amount'].sum()
-                st.metric("💰 Total Amount", f"₹{total:,.2f}")
-                
+                st.metric("💰 Total", f"₹{total:,.2f}")
                 if st.button("🗑️ Clear Cart"):
                     st.session_state.cart = []
                     st.rerun()
             else:
-                st.info("🛒 Cart is empty")
+                st.info("Cart empty")
         
         st.markdown("---")
         st.subheader("📄 Create Invoice")
@@ -527,11 +526,12 @@ def main():
         
         if st.button("💳 Generate Invoice", type="primary"):
             if not st.session_state.cart:
-                st.error("❌ Cart is empty!")
+                st.error("❌ Cart empty!")
             else:
                 invoice_no = get_next_invoice(service)
                 total = sum(item['Amount'] for item in st.session_state.cart)
                 
+                # Add to Sales
                 add_row_only(service, 'Sales', [
                     invoice_no,
                     datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -540,38 +540,215 @@ def main():
                     'Unpaid'
                 ])
                 
+                # Add items to Sales_Items
                 for item in st.session_state.cart:
-                    if not update_stock(service, item['Product'], -item['Qty']):
-                        st.warning(f"⚠️ Could not update stock for {item['Product']}")
+                    add_row_only(service, 'Sales_Items', [
+                        invoice_no,
+                        item['Product ID'],
+                        item['Product'],
+                        str(item['Qty']),
+                        str(item['Rate']),
+                        str(item['Amount'])
+                    ])
+                    update_stock(service, item['Product'], -item['Qty'])
                 
                 st.success(f"✅ Invoice {invoice_no} generated! Total: ₹{total:,.2f}")
-                
-                st.markdown("---")
-                st.subheader("🧾 Receipt")
-                receipt = f"""
-╔══════════════════════════════════════╗
-║         🧺 DETERGENT MART           ║
-║        123 Main Street, City        ║
-║        Phone: +91 98765 43210       ║
-╠══════════════════════════════════════╣
-║ Invoice: {invoice_no}                    ║
-║ Date: {datetime.now().strftime("%d-%m-%Y %H:%M")}    ║
-║ Party: {party}                        ║
-╠══════════════════════════════════════╣
-"""
-                for item in st.session_state.cart:
-                    receipt += f"║ {item['Product']:<20} x{item['Qty']:<3} ₹{item['Amount']:>8,.2f} ║\n"
-                receipt += f"""
-╠══════════════════════════════════════╣
-║ {'Total':<20} {'':<8} ₹{total:>8,.2f} ║
-║ {'Status':<20} {'':<8} {'Unpaid':>8} ║
-╚══════════════════════════════════════╝
-║         Thank You! Visit Again       ║
-╚══════════════════════════════════════╝
-"""
-                st.code(receipt)
-                
                 st.session_state.cart = []
+                st.rerun()
+
+    # ==================== CASH RECEIPT ====================
+    elif menu == "💰 Cash Receipt":
+        st.header("💰 Cash Receipt Entry")
+        
+        if not service:
+            st.error("❌ Not connected")
+            return
+        
+        parties = get_data(service, 'Parties')
+        sales = get_data(service, 'Sales')
+        
+        if parties.empty:
+            st.warning("⚠️ No parties available!")
+            return
+        
+        if sales.empty:
+            st.warning("⚠️ No invoices found!")
+            return
+        
+        # Get unpaid invoices
+        unpaid_invoices = sales[sales['Status'] != 'Paid'] if 'Status' in sales.columns else sales
+        
+        if unpaid_invoices.empty:
+            st.success("✅ All invoices are paid!")
+            return
+        
+        party_names = parties['Party Name'].tolist()
+        selected_party = st.selectbox("Select Party", party_names)
+        
+        if selected_party:
+            # Get unpaid invoices for this party
+            party_invoices = unpaid_invoices[unpaid_invoices['Party'] == selected_party]
+            
+            if party_invoices.empty:
+                st.info(f"✅ No pending invoices for {selected_party}")
+            else:
+                st.subheader(f"📋 Pending Invoices for {selected_party}")
+                
+                # Show pending invoices
+                display_data = []
+                for _, row in party_invoices.iterrows():
+                    inv_no = row['Invoice No']
+                    total = safe_float(row['Total'])
+                    
+                    # Calculate paid amount
+                    receipts = get_data(service, 'Receipts')
+                    paid = 0
+                    if not receipts.empty:
+                        paid = receipts[receipts['Invoice No'] == inv_no]['Amount'].apply(safe_float).sum()
+                    
+                    balance = total - paid
+                    if balance > 0:
+                        display_data.append({
+                            'Invoice No': inv_no,
+                            'Date': row.get('Date', '')[:10],
+                            'Total': total,
+                            'Paid': paid,
+                            'Balance': balance
+                        })
+                
+                if display_data:
+                    df_display = pd.DataFrame(display_data)
+                    st.dataframe(df_display, use_container_width=True)
+                    
+                    # Select invoice for payment
+                    invoice_no = st.selectbox("Select Invoice to Pay", df_display['Invoice No'].tolist())
+                    
+                    if invoice_no:
+                        invoice_data = df_display[df_display['Invoice No'] == invoice_no].iloc[0]
+                        max_amount = invoice_data['Balance']
+                        
+                        st.info(f"Outstanding Amount: ₹{max_amount:,.2f}")
+                        
+                        with st.form("receipt_form"):
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                amount = st.number_input("Payment Amount (₹)", min_value=0.0, max_value=max_amount, step=100.0)
+                            with col2:
+                                payment_mode = st.selectbox("Payment Mode", ["Cash", "UPI", "Bank Transfer", "Cheque"])
+                            remarks = st.text_area("Remarks (Optional)")
+                            
+                            if st.form_submit_button("💳 Record Payment", type="primary"):
+                                if amount <= 0:
+                                    st.error("❌ Amount must be greater than 0!")
+                                elif amount > max_amount:
+                                    st.error(f"❌ Amount cannot exceed ₹{max_amount:,.2f}")
+                                else:
+                                    receipt_no = get_next_receipt_no(service)
+                                    
+                                    # Add receipt
+                                    success = add_row_only(service, 'Receipts', [
+                                        receipt_no,
+                                        datetime.now().strftime("%Y-%m-%d %H:%M"),
+                                        selected_party,
+                                        invoice_no,
+                                        str(amount),
+                                        payment_mode,
+                                        remarks
+                                    ])
+                                    
+                                    if success:
+                                        # Update invoice status
+                                        update_invoice_status(service, invoice_no)
+                                        st.success(f"✅ Receipt {receipt_no} recorded! Amount: ₹{amount:,.2f}")
+                                        st.balloons()
+                                        st.rerun()
+                else:
+                    st.info(f"✅ No pending invoices for {selected_party}")
+
+    # ==================== DAILY SALES REPORT ====================
+    elif menu == "📈 Daily Sales Report":
+        st.header("📈 Daily Sales Report")
+        
+        if not service:
+            st.error("❌ Not connected")
+            return
+        
+        st.subheader("📅 Select Date Range")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            start_date = st.date_input("From Date", datetime.now() - timedelta(days=7))
+        with col2:
+            end_date = st.date_input("To Date", datetime.now())
+        
+        if st.button("📊 Generate Report", type="primary"):
+            if start_date > end_date:
+                st.error("❌ Start date cannot be after end date!")
+            else:
+                # Get data
+                sales_items = get_data(service, 'Sales_Items')
+                sales = get_data(service, 'Sales')
+                
+                if sales_items.empty:
+                    st.warning("⚠️ No sales items found!")
+                    return
+                
+                # Convert dates
+                start_str = start_date.strftime("%Y-%m-%d")
+                end_str = end_date.strftime("%Y-%m-%d")
+                
+                # Filter sales by date range
+                filtered_invoices = []
+                if not sales.empty and 'Invoice No' in sales.columns and 'Date' in sales.columns:
+                    for _, row in sales.iterrows():
+                        date_str = str(row['Date'])[:10]
+                        if start_str <= date_str <= end_str:
+                            filtered_invoices.append(row['Invoice No'])
+                
+                if not filtered_invoices:
+                    st.info(f"No sales found between {start_date} and {end_date}")
+                    return
+                
+                # Filter sales items
+                filtered_items = sales_items[sales_items['Invoice No'].isin(filtered_invoices)]
+                
+                if filtered_items.empty:
+                    st.info("No items found for these invoices")
+                    return
+                
+                # Group by product
+                report_data = filtered_items.groupby(['Product ID', 'Product Name']).agg({
+                    'Qty': lambda x: sum(safe_int(v) for v in x),
+                    'Amount': lambda x: sum(safe_float(v) for v in x)
+                }).reset_index()
+                
+                # Rename columns
+                report_data.columns = ['Item Code', 'Item Name', 'Qty Sold', 'Sold Amount']
+                report_data['Qty Sold'] = report_data['Qty Sold'].apply(safe_int)
+                report_data['Sold Amount'] = report_data['Sold Amount'].apply(safe_float)
+                
+                # Sort by amount
+                report_data = report_data.sort_values('Sold Amount', ascending=False)
+                
+                # Display
+                st.subheader(f"📊 Sales Report: {start_date} to {end_date}")
+                
+                # Summary
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Total Items Sold", f"{report_data['Qty Sold'].sum():,.0f}")
+                col2.metric("Total Sales", f"₹{report_data['Sold Amount'].sum():,.2f}")
+                col3.metric("Unique Products", len(report_data))
+                
+                st.dataframe(report_data, use_container_width=True)
+                
+                # Download button
+                csv = report_data.to_csv(index=False)
+                st.download_button(
+                    label="📥 Download Report (CSV)",
+                    data=csv,
+                    file_name=f"Sales_Report_{start_date}_to_{end_date}.csv",
+                    mime="text/csv"
+                )
 
 # ==================== RUN ====================
 
