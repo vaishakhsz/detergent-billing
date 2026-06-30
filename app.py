@@ -1,5 +1,6 @@
 """
-Complete Detergent Billing App - With Invoice-wise Receipt & Party Ledger
+Complete Detergent Billing System
+With Party Ledger, Invoice-wise Collection, and Cash Receipt
 """
 
 import streamlit as st
@@ -82,6 +83,21 @@ def add_row_only(service, sheet_name, row_data):
         st.error(f"❌ Error adding row: {str(e)}")
         return False
 
+def update_cell(service, sheet_name, range_name, value):
+    """Update a single cell"""
+    try:
+        service.spreadsheets().values().update(
+            spreadsheetId=get_sheet_id(),
+            range=range_name,
+            valueInputOption='USER_ENTERED',
+            body={'values': [[str(value)]]}
+        ).execute()
+        st.cache_data.clear()
+        return True
+    except Exception as e:
+        st.error(f"Error updating cell: {str(e)}")
+        return False
+
 def create_sheet_if_not_exists(service, sheet_name, headers):
     """Create sheet if not exists"""
     try:
@@ -159,6 +175,8 @@ def init_sheets(service):
         st.error(f"Init error: {str(e)}")
         return False
 
+# ==================== HELPERS ====================
+
 def get_next_invoice(service):
     """Generate next invoice number"""
     sales = get_data(service, 'Sales')
@@ -210,6 +228,22 @@ def get_next_party_id(service):
     except:
         return "PT001"
 
+def safe_int(value):
+    try:
+        if value is None or value == '':
+            return 0
+        return int(float(str(value).strip()))
+    except:
+        return 0
+
+def safe_float(value):
+    try:
+        if value is None or value == '':
+            return 0.0
+        return float(str(value).strip())
+    except:
+        return 0.0
+
 def update_stock(service, product_name, change):
     """Update stock"""
     try:
@@ -230,18 +264,19 @@ def update_stock(service, product_name, change):
         new_stock = current_stock + change
         row_num = idx[0] + 2
         
-        service.spreadsheets().values().update(
-            spreadsheetId=get_sheet_id(),
-            range=f"Products!D{row_num}",
-            valueInputOption='USER_ENTERED',
-            body={'values': [[str(new_stock)]]}
-        ).execute()
-        
-        st.cache_data.clear()
+        update_cell(service, 'Products', f"D{row_num}", new_stock)
         return True
     except Exception as e:
         st.error(f"Error updating stock: {str(e)}")
         return False
+
+def get_invoice_paid_amount(service, invoice_no):
+    """Get total paid amount for an invoice"""
+    receipts = get_data(service, 'Receipts')
+    if receipts.empty:
+        return 0
+    paid = receipts[receipts['Invoice No'] == invoice_no]['Amount'].apply(safe_float).sum()
+    return paid
 
 def update_invoice_status(service, invoice_no):
     """Update invoice status based on payments"""
@@ -253,10 +288,7 @@ def update_invoice_status(service, invoice_no):
         return
     
     total = safe_float(sales.loc[idx[0], 'Total'])
-    paid = 0
-    
-    if not receipts.empty:
-        paid = receipts[receipts['Invoice No'] == invoice_no]['Amount'].apply(safe_float).sum()
+    paid = get_invoice_paid_amount(service, invoice_no)
     
     if paid >= total:
         status = 'Paid'
@@ -266,37 +298,7 @@ def update_invoice_status(service, invoice_no):
         status = 'Unpaid'
     
     row_num = idx[0] + 2
-    service.spreadsheets().values().update(
-        spreadsheetId=get_sheet_id(),
-        range=f"Sales!E{row_num}",
-        valueInputOption='USER_ENTERED',
-        body={'values': [[status]]}
-    ).execute()
-    st.cache_data.clear()
-
-def get_invoice_paid_amount(service, invoice_no):
-    """Get total paid amount for an invoice"""
-    receipts = get_data(service, 'Receipts')
-    if receipts.empty:
-        return 0
-    paid = receipts[receipts['Invoice No'] == invoice_no]['Amount'].apply(safe_float).sum()
-    return paid
-
-def safe_int(value):
-    try:
-        if value is None or value == '':
-            return 0
-        return int(float(str(value).strip()))
-    except:
-        return 0
-
-def safe_float(value):
-    try:
-        if value is None or value == '':
-            return 0.0
-        return float(str(value).strip())
-    except:
-        return 0.0
+    update_cell(service, 'Sales', f"E{row_num}", status)
 
 # ==================== MAIN APP ====================
 
@@ -604,13 +606,13 @@ def main():
                         total_outstanding += (total - paid)
                     st.info(f"💰 Total Outstanding for {party}: ₹{total_outstanding:,.2f}")
                 
-                # Invoice Reference Number - Manual Entry OR Select
-                st.subheader("Invoice Reference")
+                # Invoice Reference Number
+                st.subheader("📄 Invoice Reference")
                 
                 # Option 1: Select from dropdown
                 if party and not party_invoices.empty:
                     invoice_options = [''] + party_invoices['Invoice No'].tolist()
-                    invoice_no = st.selectbox("Select Invoice Number (OR type below)", invoice_options)
+                    invoice_no = st.selectbox("Select Invoice Number", invoice_options)
                     
                     if invoice_no:
                         invoice_data = party_invoices[party_invoices['Invoice No'] == invoice_no].iloc[0]
@@ -626,8 +628,7 @@ def main():
             with col2:
                 # Option 2: Manual entry
                 manual_invoice = st.text_input("Or Enter Invoice Number Manually", 
-                                              placeholder="e.g., INV001", 
-                                              help="Enter invoice number if not in dropdown")
+                                              placeholder="e.g., INV001")
                 
                 # Use manual entry if provided, else use dropdown selection
                 final_invoice = manual_invoice if manual_invoice else invoice_no
@@ -694,7 +695,6 @@ def main():
         parties = get_data(service, 'Parties')
         sales = get_data(service, 'Sales')
         receipts = get_data(service, 'Receipts')
-        sales_items = get_data(service, 'Sales_Items')
         
         if parties.empty:
             st.warning("⚠️ No parties available!")
@@ -706,98 +706,175 @@ def main():
         selected_party = st.selectbox("Select Party", party_names)
         
         if selected_party:
-            st.subheader(f"📒 Ledger for {selected_party}")
-            
-            # Get invoices for this party
+            # Get data for this party
             party_invoices = sales[sales['Party'] == selected_party] if not sales.empty else pd.DataFrame()
+            party_receipts = receipts[receipts['Party'] == selected_party] if not receipts.empty else pd.DataFrame()
             
-            if party_invoices.empty:
+            if party_invoices.empty and party_receipts.empty:
                 st.info(f"No transactions found for {selected_party}")
             else:
-                # Build ledger
-                ledger_data = []
+                # ==================== TAB 1: COMPLETE LEDGER ====================
+                tab1, tab2 = st.tabs(["📊 Complete Party Ledger", "📄 Invoice-wise Collection"])
                 
-                # Opening Balance
-                party_data = parties[parties['Party Name'] == selected_party].iloc[0]
-                opening_balance = safe_float(party_data.get('Opening Balance', 0))
-                balance = opening_balance
-                
-                ledger_data.append({
-                    'Date': 'Opening',
-                    'Particulars': 'Opening Balance',
-                    'Invoice No': '',
-                    'Debit': opening_balance if opening_balance > 0 else 0,
-                    'Credit': 0,
-                    'Balance': balance
-                })
-                
-                # Process invoices in date order
-                for _, row in party_invoices.iterrows():
-                    inv_no = row['Invoice No']
-                    date = str(row['Date'])[:10] if 'Date' in row else ''
-                    total = safe_float(row['Total'])
+                with tab1:
+                    st.subheader(f"📊 Complete Ledger - {selected_party}")
                     
-                    # Debit (Sale)
-                    balance += total
-                    ledger_data.append({
-                        'Date': date,
-                        'Particulars': f'Sale',
-                        'Invoice No': inv_no,
-                        'Debit': total,
-                        'Credit': 0,
-                        'Balance': balance
-                    })
+                    # Build complete ledger with running balance
+                    ledger = []
+                    running_balance = 0
                     
-                    # Get payments for this invoice
-                    inv_receipts = receipts[receipts['Invoice No'] == inv_no] if not receipts.empty else pd.DataFrame()
-                    for _, rec in inv_receipts.iterrows():
-                        amount = safe_float(rec['Amount'])
-                        balance -= amount
-                        ledger_data.append({
-                            'Date': str(rec['Date'])[:10] if 'Date' in rec else '',
-                            'Particulars': f'Payment - {rec.get("Payment Mode", "Cash")}',
-                            'Invoice No': inv_no,
-                            'Debit': 0,
-                            'Credit': amount,
-                            'Balance': balance
+                    transactions = []
+                    
+                    # Add invoices (Debit)
+                    for _, row in party_invoices.iterrows():
+                        transactions.append({
+                            'Date': str(row['Date'])[:10] if 'Date' in row else '',
+                            'Particulars': f"Sale - {row['Invoice No']}",
+                            'Invoice No': row['Invoice No'],
+                            'Debit': safe_float(row['Total']),
+                            'Credit': 0,
+                            'Balance': 0
                         })
-                
-                # Display ledger
-                ledger_df = pd.DataFrame(ledger_data)
-                st.dataframe(ledger_df, use_container_width=True)
-                
-                # Summary
-                col1, col2, col3, col4 = st.columns(4)
-                total_sales = ledger_df['Debit'].sum()
-                total_payments = ledger_df['Credit'].sum()
-                col1.metric("Total Sales", f"₹{total_sales:,.2f}")
-                col2.metric("Total Payments", f"₹{total_payments:,.2f}")
-                col3.metric("Opening Balance", f"₹{opening_balance:,.2f}")
-                col4.metric("Closing Balance", f"₹{balance:,.2f}", 
-                           delta="Due" if balance > 0 else "Settled")
-                
-                # Invoice-wise Collection Summary
-                st.subheader("📄 Invoice-wise Collection Details")
-                
-                invoice_summary = []
-                for _, row in party_invoices.iterrows():
-                    inv_no = row['Invoice No']
-                    total = safe_float(row['Total'])
-                    paid = get_invoice_paid_amount(service, inv_no)
-                    balance_amount = total - paid
-                    status = 'Paid' if balance_amount <= 0 else 'Partially Paid' if paid > 0 else 'Unpaid'
                     
-                    invoice_summary.append({
-                        'Invoice No': inv_no,
-                        'Date': str(row['Date'])[:10] if 'Date' in row else '',
-                        'Total': total,
-                        'Paid': paid,
-                        'Balance': balance_amount,
-                        'Status': status
-                    })
+                    # Add receipts (Credit)
+                    for _, row in party_receipts.iterrows():
+                        transactions.append({
+                            'Date': str(row['Date'])[:10] if 'Date' in row else '',
+                            'Particulars': f"Receipt - {row.get('Receipt No', '')}",
+                            'Invoice No': row.get('Invoice No', ''),
+                            'Debit': 0,
+                            'Credit': safe_float(row['Amount']),
+                            'Balance': 0
+                        })
+                    
+                    # Sort by date
+                    transactions.sort(key=lambda x: x['Date'])
+                    
+                    # Calculate running balance
+                    for trans in transactions:
+                        running_balance += trans['Debit'] - trans['Credit']
+                        trans['Balance'] = running_balance
+                    
+                    ledger_df = pd.DataFrame(transactions)
+                    
+                    # Format for display
+                    display_df = ledger_df[['Date', 'Particulars', 'Invoice No', 'Debit', 'Credit', 'Balance']]
+                    st.dataframe(display_df, use_container_width=True)
+                    
+                    # Summary
+                    col1, col2, col3, col4 = st.columns(4)
+                    total_debit = ledger_df['Debit'].sum()
+                    total_credit = ledger_df['Credit'].sum()
+                    current_balance = running_balance
+                    
+                    # Opening balance
+                    party_data = parties[parties['Party Name'] == selected_party].iloc[0]
+                    opening_balance = safe_float(party_data.get('Opening Balance', 0))
+                    
+                    col1.metric("Opening Balance", f"₹{opening_balance:,.2f}")
+                    col2.metric("Total Sales (Debit)", f"₹{total_debit:,.2f}")
+                    col3.metric("Total Receipts (Credit)", f"₹{total_credit:,.2f}")
+                    col4.metric("Closing Balance", f"₹{current_balance:,.2f}", 
+                               delta="Due" if current_balance > 0 else "Settled")
+                    
+                    # Download CSV
+                    csv = display_df.to_csv(index=False)
+                    st.download_button(
+                        label="📥 Download Full Ledger (CSV)",
+                        data=csv,
+                        file_name=f"Full_Ledger_{selected_party}.csv",
+                        mime="text/csv"
+                    )
                 
-                summary_df = pd.DataFrame(invoice_summary)
-                st.dataframe(summary_df, use_container_width=True)
+                with tab2:
+                    st.subheader(f"📄 Invoice-wise Collection - {selected_party}")
+                    
+                    invoice_summary = []
+                    for _, row in party_invoices.iterrows():
+                        inv_no = row['Invoice No']
+                        total = safe_float(row['Total'])
+                        
+                        # Get receipts for this invoice
+                        inv_receipts = party_receipts[party_receipts['Invoice No'] == inv_no]
+                        paid = inv_receipts['Amount'].apply(safe_float).sum() if not inv_receipts.empty else 0
+                        balance = total - paid
+                        
+                        # Status logic
+                        if balance <= 0:
+                            status = '✅ Paid'
+                        elif paid > 0:
+                            status = '⚠️ Partially Paid'
+                        else:
+                            status = '❌ Unpaid'
+                        
+                        # Get receipt details
+                        receipt_details = []
+                        if not inv_receipts.empty:
+                            for _, rec in inv_receipts.iterrows():
+                                receipt_details.append({
+                                    'Receipt No': rec.get('Receipt No', ''),
+                                    'Date': str(rec['Date'])[:10] if 'Date' in rec else '',
+                                    'Amount': safe_float(rec['Amount']),
+                                    'Mode': rec.get('Payment Mode', '')
+                                })
+                        
+                        invoice_summary.append({
+                            'Invoice No': inv_no,
+                            'Date': str(row['Date'])[:10] if 'Date' in row else '',
+                            'Invoice Amount': total,
+                            'Received': paid,
+                            'Balance': balance,
+                            'Status': status,
+                            'Receipts': receipt_details
+                        })
+                    
+                    if invoice_summary:
+                        # Display summary table
+                        summary_display = []
+                        for inv in invoice_summary:
+                            summary_display.append({
+                                'Invoice No': inv['Invoice No'],
+                                'Date': inv['Date'],
+                                'Invoice Amount': inv['Invoice Amount'],
+                                'Received': inv['Received'],
+                                'Balance': inv['Balance'],
+                                'Status': inv['Status']
+                            })
+                        
+                        summary_df = pd.DataFrame(summary_display)
+                        st.dataframe(summary_df, use_container_width=True)
+                        
+                        # Show receipts for selected invoice
+                        st.subheader("🔍 View Receipts for an Invoice")
+                        selected_inv = st.selectbox("Select Invoice", summary_df['Invoice No'].tolist())
+                        
+                        if selected_inv:
+                            inv_data = next((inv for inv in invoice_summary if inv['Invoice No'] == selected_inv), None)
+                            if inv_data and inv_data['Receipts']:
+                                st.write(f"**Receipts for Invoice {selected_inv}:**")
+                                receipt_df = pd.DataFrame(inv_data['Receipts'])
+                                st.dataframe(receipt_df, use_container_width=True)
+                                
+                                total_paid = inv_data['Received']
+                                inv_total = inv_data['Invoice Amount']
+                                st.info(f"💰 Total Received: ₹{total_paid:,.2f} | Invoice Total: ₹{inv_total:,.2f} | Balance: ₹{inv_total - total_paid:,.2f}")
+                            else:
+                                st.info(f"No receipts recorded for Invoice {selected_inv}")
+                        
+                        # Totals
+                        col1, col2 = st.columns(2)
+                        total_outstanding = summary_df['Balance'].sum()
+                        col1.metric("💰 Total Outstanding", f"₹{total_outstanding:,.2f}")
+                        col2.metric("📄 Number of Invoices", len(summary_df))
+                        
+                        # Download
+                        csv = summary_df.to_csv(index=False)
+                        st.download_button(
+                            label="📥 Download Invoice-wise Report (CSV)",
+                            data=csv,
+                            file_name=f"Invoice_Wise_{selected_party}.csv",
+                            mime="text/csv"
+                        )
 
     # ==================== REPORTS ====================
     elif menu == "📈 Reports":
@@ -883,9 +960,6 @@ def main():
             st.subheader("📋 Outstanding Report")
             
             sales = get_data(service, 'Sales')
-            receipts = get_data(service, 'Receipts')
-            parties = get_data(service, 'Parties')
-            
             if sales.empty:
                 st.info("No sales data available")
                 return
