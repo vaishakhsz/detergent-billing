@@ -1,6 +1,7 @@
 """
 Complete Detergent Billing System
 With Party Ledger, Invoice-wise Collection, and Cash Receipt
+Fixed: Column validation added
 """
 
 import streamlit as st
@@ -273,7 +274,7 @@ def update_stock(service, product_name, change):
 def get_invoice_paid_amount(service, invoice_no):
     """Get total paid amount for an invoice"""
     receipts = get_data(service, 'Receipts')
-    if receipts.empty:
+    if receipts.empty or 'Invoice No' not in receipts.columns:
         return 0
     paid = receipts[receipts['Invoice No'] == invoice_no]['Amount'].apply(safe_float).sum()
     return paid
@@ -281,7 +282,8 @@ def get_invoice_paid_amount(service, invoice_no):
 def update_invoice_status(service, invoice_no):
     """Update invoice status based on payments"""
     sales = get_data(service, 'Sales')
-    receipts = get_data(service, 'Receipts')
+    if sales.empty or 'Invoice No' not in sales.columns:
+        return
     
     idx = sales[sales['Invoice No'] == invoice_no].index
     if idx.empty:
@@ -299,6 +301,13 @@ def update_invoice_status(service, invoice_no):
     
     row_num = idx[0] + 2
     update_cell(service, 'Sales', f"E{row_num}", status)
+
+def check_columns(df, required_columns):
+    """Check if required columns exist in DataFrame"""
+    if df.empty:
+        return False, []
+    missing = [col for col in required_columns if col not in df.columns]
+    return len(missing) == 0, missing
 
 # ==================== MAIN APP ====================
 
@@ -582,6 +591,12 @@ def main():
             st.warning("⚠️ No invoices found!")
             return
         
+        # Check required columns
+        sales_ok, sales_missing = check_columns(sales, ['Invoice No', 'Party', 'Total', 'Status'])
+        if not sales_ok:
+            st.error(f"❌ Sales sheet missing columns: {sales_missing}")
+            return
+        
         st.subheader("📝 Enter Receipt Details")
         
         with st.form("receipt_form"):
@@ -589,48 +604,46 @@ def main():
             
             with col1:
                 # Select Party
-                party_names = parties['Party Name'].tolist()
-                party = st.selectbox("Party *", party_names)
+                party_names = parties['Party Name'].tolist() if 'Party Name' in parties.columns else []
+                party = st.selectbox("Party *", party_names) if party_names else st.text_input("Party *")
                 
                 # Get unpaid invoices for selected party
-                unpaid_invoices = sales[sales['Status'] != 'Paid'] if 'Status' in sales.columns else sales
-                party_invoices = unpaid_invoices[unpaid_invoices['Party'] == party] if party else pd.DataFrame()
-                
-                # Show outstanding amount
-                if party and not party_invoices.empty:
-                    total_outstanding = 0
-                    for _, row in party_invoices.iterrows():
-                        inv_no = row['Invoice No']
-                        total = safe_float(row['Total'])
-                        paid = get_invoice_paid_amount(service, inv_no)
-                        total_outstanding += (total - paid)
-                    st.info(f"💰 Total Outstanding for {party}: ₹{total_outstanding:,.2f}")
+                if party and not sales.empty:
+                    unpaid_invoices = sales[sales['Status'] != 'Paid'] if 'Status' in sales.columns else sales
+                    party_invoices = unpaid_invoices[unpaid_invoices['Party'] == party] if party else pd.DataFrame()
+                    
+                    # Show outstanding amount
+                    if not party_invoices.empty:
+                        total_outstanding = 0
+                        for _, row in party_invoices.iterrows():
+                            inv_no = row['Invoice No']
+                            total = safe_float(row['Total'])
+                            paid = get_invoice_paid_amount(service, inv_no)
+                            total_outstanding += (total - paid)
+                        st.info(f"💰 Total Outstanding for {party}: ₹{total_outstanding:,.2f}")
                 
                 # Invoice Reference Number
                 st.subheader("📄 Invoice Reference")
                 
-                # Option 1: Select from dropdown
-                if party and not party_invoices.empty:
+                # Get invoice options
+                invoice_options = []
+                if party and not sales.empty:
+                    party_invoices = sales[sales['Party'] == party]
                     invoice_options = [''] + party_invoices['Invoice No'].tolist()
-                    invoice_no = st.selectbox("Select Invoice Number", invoice_options)
-                    
-                    if invoice_no:
-                        invoice_data = party_invoices[party_invoices['Invoice No'] == invoice_no].iloc[0]
-                        total = safe_float(invoice_data['Total'])
+                
+                invoice_no = st.selectbox("Select Invoice Number", invoice_options) if invoice_options else ""
+                
+                if invoice_no and not sales.empty:
+                    invoice_data = sales[sales['Invoice No'] == invoice_no]
+                    if not invoice_data.empty:
+                        total = safe_float(invoice_data.iloc[0]['Total'])
                         paid = get_invoice_paid_amount(service, invoice_no)
                         balance = total - paid
                         st.info(f"💳 Invoice: {invoice_no} | Total: ₹{total:,.2f} | Paid: ₹{paid:,.2f} | Balance: ₹{balance:,.2f}")
-                else:
-                    invoice_no = ""
-                    if party and party_invoices.empty:
-                        st.success(f"✅ No pending invoices for {party}")
             
             with col2:
-                # Option 2: Manual entry
-                manual_invoice = st.text_input("Or Enter Invoice Number Manually", 
-                                              placeholder="e.g., INV001")
-                
-                # Use manual entry if provided, else use dropdown selection
+                # Manual entry
+                manual_invoice = st.text_input("Or Enter Invoice Number Manually", placeholder="e.g., INV001")
                 final_invoice = manual_invoice if manual_invoice else invoice_no
                 
                 amount = st.number_input("Payment Amount (₹) *", min_value=0.0, step=100.0)
@@ -700,10 +713,18 @@ def main():
             st.warning("⚠️ No parties available!")
             return
         
+        # Check required columns
+        sales_ok, sales_missing = check_columns(sales, ['Invoice No', 'Party', 'Total'])
+        receipts_ok, receipts_missing = check_columns(receipts, ['Invoice No', 'Amount', 'Party'])
+        
+        if not sales_ok:
+            st.error(f"❌ Sales sheet missing columns: {sales_missing}")
+            return
+        
         st.subheader("📋 Select Party")
         
-        party_names = parties['Party Name'].tolist()
-        selected_party = st.selectbox("Select Party", party_names)
+        party_names = parties['Party Name'].tolist() if 'Party Name' in parties.columns else []
+        selected_party = st.selectbox("Select Party", party_names) if party_names else None
         
         if selected_party:
             # Get data for this party
@@ -720,9 +741,6 @@ def main():
                     st.subheader(f"📊 Complete Ledger - {selected_party}")
                     
                     # Build complete ledger with running balance
-                    ledger = []
-                    running_balance = 0
-                    
                     transactions = []
                     
                     # Add invoices (Debit)
@@ -751,6 +769,7 @@ def main():
                     transactions.sort(key=lambda x: x['Date'])
                     
                     # Calculate running balance
+                    running_balance = 0
                     for trans in transactions:
                         running_balance += trans['Debit'] - trans['Credit']
                         trans['Balance'] = running_balance
@@ -795,7 +814,7 @@ def main():
                         total = safe_float(row['Total'])
                         
                         # Get receipts for this invoice
-                        inv_receipts = party_receipts[party_receipts['Invoice No'] == inv_no]
+                        inv_receipts = party_receipts[party_receipts['Invoice No'] == inv_no] if not party_receipts.empty else pd.DataFrame()
                         paid = inv_receipts['Amount'].apply(safe_float).sum() if not inv_receipts.empty else 0
                         balance = total - paid
                         
@@ -845,21 +864,22 @@ def main():
                         st.dataframe(summary_df, use_container_width=True)
                         
                         # Show receipts for selected invoice
-                        st.subheader("🔍 View Receipts for an Invoice")
-                        selected_inv = st.selectbox("Select Invoice", summary_df['Invoice No'].tolist())
-                        
-                        if selected_inv:
-                            inv_data = next((inv for inv in invoice_summary if inv['Invoice No'] == selected_inv), None)
-                            if inv_data and inv_data['Receipts']:
-                                st.write(f"**Receipts for Invoice {selected_inv}:**")
-                                receipt_df = pd.DataFrame(inv_data['Receipts'])
-                                st.dataframe(receipt_df, use_container_width=True)
-                                
-                                total_paid = inv_data['Received']
-                                inv_total = inv_data['Invoice Amount']
-                                st.info(f"💰 Total Received: ₹{total_paid:,.2f} | Invoice Total: ₹{inv_total:,.2f} | Balance: ₹{inv_total - total_paid:,.2f}")
-                            else:
-                                st.info(f"No receipts recorded for Invoice {selected_inv}")
+                        if not summary_df.empty:
+                            st.subheader("🔍 View Receipts for an Invoice")
+                            selected_inv = st.selectbox("Select Invoice", summary_df['Invoice No'].tolist())
+                            
+                            if selected_inv:
+                                inv_data = next((inv for inv in invoice_summary if inv['Invoice No'] == selected_inv), None)
+                                if inv_data and inv_data['Receipts']:
+                                    st.write(f"**Receipts for Invoice {selected_inv}:**")
+                                    receipt_df = pd.DataFrame(inv_data['Receipts'])
+                                    st.dataframe(receipt_df, use_container_width=True)
+                                    
+                                    total_paid = inv_data['Received']
+                                    inv_total = inv_data['Invoice Amount']
+                                    st.info(f"💰 Total Received: ₹{total_paid:,.2f} | Invoice Total: ₹{inv_total:,.2f} | Balance: ₹{inv_total - total_paid:,.2f}")
+                                else:
+                                    st.info(f"No receipts recorded for Invoice {selected_inv}")
                         
                         # Totals
                         col1, col2 = st.columns(2)
@@ -962,6 +982,10 @@ def main():
             sales = get_data(service, 'Sales')
             if sales.empty:
                 st.info("No sales data available")
+                return
+            
+            if 'Invoice No' not in sales.columns or 'Party' not in sales.columns or 'Total' not in sales.columns:
+                st.error("❌ Sales sheet missing required columns")
                 return
             
             outstanding_data = []
