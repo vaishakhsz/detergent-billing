@@ -1,5 +1,6 @@
 """
-Simple Detergent Billing App - With Debugging
+Simple Detergent Billing App - Fixed Party Saving
+With WhatsApp Number Column
 """
 
 import streamlit as st
@@ -8,7 +9,7 @@ from datetime import datetime
 import json
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-import traceback
+import time
 
 # ==================== PAGE CONFIG ====================
 st.set_page_config(
@@ -24,9 +25,8 @@ def get_sheets_service():
     try:
         if 'google_sheets' in st.secrets:
             creds_dict = dict(st.secrets['google_sheets'])
-            st.sidebar.success("✅ Secrets found!")
         else:
-            st.sidebar.error("❌ No secrets found!")
+            st.error("❌ No secrets found!")
             return None
         
         creds = service_account.Credentials.from_service_account_info(
@@ -34,10 +34,9 @@ def get_sheets_service():
             scopes=['https://www.googleapis.com/auth/spreadsheets']
         )
         service = build('sheets', 'v4', credentials=creds)
-        st.sidebar.success("✅ Connected to Google Sheets API")
         return service
     except Exception as e:
-        st.sidebar.error(f"❌ Connection error: {str(e)}")
+        st.error(f"❌ Connection error: {str(e)}")
         return None
 
 def get_sheet_id():
@@ -62,10 +61,8 @@ def get_data(service, sheet_name):
         return pd.DataFrame()
 
 def add_row(service, sheet_name, row_data):
-    """Add row to sheet with debugging"""
+    """Add row to sheet"""
     try:
-        st.info(f"📝 Adding to {sheet_name}: {row_data}")
-        
         body = {'values': [row_data]}
         result = service.spreadsheets().values().append(
             spreadsheetId=get_sheet_id(),
@@ -74,11 +71,14 @@ def add_row(service, sheet_name, row_data):
             body=body
         ).execute()
         
-        st.success(f"✅ Row added successfully! Response: {result}")
-        return True
+        # Check if row was actually added
+        updated_rows = result.get('updates', {}).get('updatedRows', 0)
+        if updated_rows > 0:
+            return True
+        else:
+            return False
     except Exception as e:
-        st.error(f"❌ Error adding row: {str(e)}")
-        st.error(f"Full error: {traceback.format_exc()}")
+        st.error(f"Error adding row: {str(e)}")
         return False
 
 def update_data(service, sheet_name, df):
@@ -105,6 +105,7 @@ def update_data(service, sheet_name, df):
 def create_sheet_if_not_exists(service, sheet_name, headers):
     """Create sheet with headers if not exists"""
     try:
+        # Check if sheet exists
         spreadsheet = service.spreadsheets().get(
             spreadsheetId=get_sheet_id()
         ).execute()
@@ -112,7 +113,7 @@ def create_sheet_if_not_exists(service, sheet_name, headers):
         sheet_names = [sheet['properties']['title'] for sheet in sheets]
         
         if sheet_name not in sheet_names:
-            st.info(f"📝 Creating sheet: {sheet_name}")
+            # Create sheet
             body = {
                 'requests': [{
                     'addSheet': {
@@ -125,14 +126,18 @@ def create_sheet_if_not_exists(service, sheet_name, headers):
                 body=body
             ).execute()
             
+            # Add headers
             df = pd.DataFrame(columns=headers)
             update_data(service, sheet_name, df)
             return True
         else:
-            # Check if headers exist
+            # Check if headers match, if not update
             df = get_data(service, sheet_name)
             if df.empty:
-                st.info(f"📝 Adding headers to: {sheet_name}")
+                df = pd.DataFrame(columns=headers)
+                update_data(service, sheet_name, df)
+            elif list(df.columns) != headers:
+                # Headers don't match, update them
                 df = pd.DataFrame(columns=headers)
                 update_data(service, sheet_name, df)
         return True
@@ -147,7 +152,7 @@ def init_sheets(service):
     try:
         sheets = {
             'Products': ['Product ID', 'Product Name', 'Rate', 'Stock'],
-            'Parties': ['Party ID', 'Party Name', 'Mobile', 'Address', 'Opening Balance', 'GST No'],
+            'Parties': ['Party ID', 'Party Name', 'Mobile', 'WhatsApp', 'Address', 'Opening Balance', 'GST No'],
             'Sales': ['Invoice No', 'Date', 'Party', 'Total', 'Status']
         }
         
@@ -157,7 +162,6 @@ def init_sheets(service):
         # Add default products
         products = get_data(service, 'Products')
         if products.empty:
-            st.info("📝 Adding default products...")
             defaults = [
                 ['P001', 'Dishwash Liquid 1L', 120, 100],
                 ['P002', 'Detergent Powder 1kg', 120, 100],
@@ -166,7 +170,6 @@ def init_sheets(service):
             ]
             df = pd.DataFrame(defaults, columns=['Product ID', 'Product Name', 'Rate', 'Stock'])
             update_data(service, 'Products', df)
-            st.success("✅ Default products added!")
         
         return True
     except Exception as e:
@@ -190,6 +193,23 @@ def get_next_invoice(service):
     except:
         return "INV001"
 
+def get_next_party_id(service):
+    """Generate next party ID"""
+    parties = get_data(service, 'Parties')
+    if parties.empty:
+        return "PT001"
+    try:
+        ids = parties['Party ID'].astype(str).tolist()
+        nums = []
+        for pid in ids:
+            if pid and pid.startswith('PT'):
+                num = int(pid.replace('PT', ''))
+                nums.append(num)
+        next_num = max(nums) + 1 if nums else 1
+        return f"PT{next_num:03d}"
+    except:
+        return "PT001"
+
 # ==================== MAIN APP ====================
 
 def main():
@@ -203,15 +223,7 @@ def main():
     service = get_sheets_service()
     if service:
         init_sheets(service)
-        st.sidebar.success("✅ Ready to use")
-        
-        # Test connection
-        try:
-            test = service.spreadsheets().get(spreadsheetId=get_sheet_id()).execute()
-            st.sidebar.success(f"📊 Connected to: {test.get('properties', {}).get('title', 'Unknown')}")
-        except Exception as e:
-            st.sidebar.error(f"❌ Can't access sheet: {str(e)}")
-            st.sidebar.info("💡 Make sure you've shared the sheet with: detergent-billing@detergent-billing.iam.gserviceaccount.com")
+        st.sidebar.success("✅ Connected to Google Sheets")
     else:
         st.sidebar.warning("⚠️ Check your secrets.toml file")
     
@@ -306,7 +318,6 @@ def main():
             st.error("❌ Not connected to Google Sheets")
             return
         
-        # Show current parties
         parties = get_data(service, 'Parties')
         
         tab1, tab2 = st.tabs(["Manage Parties", "Add Party"])
@@ -315,8 +326,7 @@ def main():
             st.subheader("📋 All Parties")
             
             if parties.empty:
-                st.warning("⚠️ No parties found in Google Sheets")
-                st.info("Go to 'Add Party' tab to add a new party")
+                st.warning("⚠️ No parties found")
             else:
                 st.success(f"✅ Found {len(parties)} parties")
                 st.dataframe(parties, use_container_width=True)
@@ -327,12 +337,14 @@ def main():
                     selected_party = st.selectbox("Select a party", parties['Party Name'].tolist())
                     if selected_party:
                         party_data = parties[parties['Party Name'] == selected_party].iloc[0]
-                        col1, col2 = st.columns(2)
+                        col1, col2, col3 = st.columns(3)
                         with col1:
                             st.write(f"**Party ID:** {party_data.get('Party ID', 'N/A')}")
                             st.write(f"**Mobile:** {party_data.get('Mobile', 'N/A')}")
                         with col2:
+                            st.write(f"**WhatsApp:** {party_data.get('WhatsApp', 'N/A')}")
                             st.write(f"**Opening Balance:** ₹{party_data.get('Opening Balance', 0)}")
+                        with col3:
                             st.write(f"**GST No:** {party_data.get('GST No', 'N/A')}")
                         st.write(f"**Address:** {party_data.get('Address', 'N/A')}")
         
@@ -344,6 +356,7 @@ def main():
                 with col1:
                     party_name = st.text_input("Party Name *", placeholder="e.g., Rajesh Store")
                     mobile = st.text_input("Mobile Number", placeholder="e.g., 9876543210")
+                    whatsapp = st.text_input("WhatsApp Number", placeholder="e.g., 9876543210")
                     opening_balance = st.number_input("Opening Balance (₹)", min_value=0.0, step=100.0, value=0.0)
                 with col2:
                     address = st.text_area("Address", placeholder="Enter full address")
@@ -355,33 +368,22 @@ def main():
                     if not party_name:
                         st.error("❌ Party Name is required!")
                     else:
-                        # Show what we're about to add
-                        st.info(f"📝 Adding party: {party_name}")
+                        # Generate Party ID
+                        party_id = get_next_party_id(service)
                         
-                        # Get current parties to generate ID
-                        current_parties = get_data(service, 'Parties')
+                        # Prepare row data - Columns: Party ID, Party Name, Mobile, WhatsApp, Address, Opening Balance, GST No
+                        row_data = [
+                            party_id,
+                            party_name,
+                            mobile,
+                            whatsapp,
+                            address,
+                            opening_balance,
+                            gst_no
+                        ]
                         
-                        if current_parties.empty:
-                            party_id = "PT001"
-                        else:
-                            # Find max ID
-                            ids = current_parties['Party ID'].astype(str).tolist()
-                            nums = []
-                            for pid in ids:
-                                if pid and pid.startswith('PT'):
-                                    try:
-                                        num = int(pid.replace('PT', ''))
-                                        nums.append(num)
-                                    except:
-                                        pass
-                            next_num = max(nums) + 1 if nums else 1
-                            party_id = f"PT{next_num:03d}"
-                        
-                        # Prepare row data
-                        row_data = [party_id, party_name, mobile, address, opening_balance, gst_no]
-                        
-                        # Show what will be added
-                        st.write("**Row to add:**", row_data)
+                        # Show what's being added
+                        st.info(f"📝 Adding: {party_name} (ID: {party_id})")
                         
                         # Add to sheet
                         success = add_row(service, 'Parties', row_data)
@@ -391,12 +393,12 @@ def main():
                             st.info(f"**Party ID:** {party_id}")
                             st.balloons()
                             
-                            # Wait a moment then refresh
-                            import time
+                            # Refresh the page to show new party
                             time.sleep(1)
                             st.rerun()
                         else:
-                            st.error("❌ Failed to add party. Check the error above.")
+                            st.error("❌ Failed to add party. Please check Google Sheets permissions.")
+                            st.info("Make sure you've shared the sheet with: detergent-billing@detergent-billing.iam.gserviceaccount.com")
 
     # ==================== BILLING ====================
     elif menu == "🧾 Billing":
@@ -415,7 +417,6 @@ def main():
         
         if parties.empty:
             st.warning("⚠️ No parties! Add parties first.")
-            st.info("Go to 'Parties' tab to add a party")
             return
         
         col1, col2 = st.columns([2, 1])
