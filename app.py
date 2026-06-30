@@ -1,5 +1,5 @@
 """
-Simple Detergent Billing App - With Detailed Error Messages
+Simple Detergent Billing App - Fixed Duplicate Columns
 """
 
 import streamlit as st
@@ -26,14 +26,6 @@ def get_sheets_service():
             return None
         
         creds_dict = dict(st.secrets['google_sheets'])
-        
-        # Check required fields
-        required_fields = ['type', 'project_id', 'private_key_id', 'private_key', 'client_email']
-        missing = [f for f in required_fields if f not in creds_dict]
-        if missing:
-            st.sidebar.error(f"❌ Missing fields in secrets: {missing}")
-            return None
-        
         creds = service_account.Credentials.from_service_account_info(
             creds_dict,
             scopes=['https://www.googleapis.com/auth/spreadsheets']
@@ -47,7 +39,7 @@ def get_sheet_id():
     return "1jaat8u_k7rQyqhPcdL4zmUkkuG8gpwwk6z-Tvv2SMrQ"
 
 def get_data(service, sheet_name):
-    """Get data from sheet"""
+    """Get data from sheet - handles duplicate columns"""
     try:
         result = service.spreadsheets().values().get(
             spreadsheetId=get_sheet_id(),
@@ -56,28 +48,47 @@ def get_data(service, sheet_name):
         values = result.get('values', [])
         if not values:
             return pd.DataFrame()
+        
         headers = values[0]
         rows = values[1:]
-        df = pd.DataFrame(rows, columns=headers)
-        return df
+        
+        # Fix duplicate column names
+        seen = {}
+        new_headers = []
+        for h in headers:
+            if h in seen:
+                seen[h] += 1
+                new_headers.append(f"{h}_{seen[h]}")
+            else:
+                seen[h] = 1
+                new_headers.append(h)
+        
+        # Only use first 7 columns (Party ID, Party Name, Mobile, WhatsApp, Address, Opening Balance, GST No)
+        expected_headers = ['Party ID', 'Party Name', 'Mobile', 'WhatsApp', 'Address', 'Opening Balance', 'GST No']
+        
+        # If we have fewer columns, pad with empty
+        if len(new_headers) < len(expected_headers):
+            new_headers.extend(expected_headers[len(new_headers):])
+        
+        # Create dataframe with fixed headers
+        df = pd.DataFrame(rows, columns=new_headers[:len(rows[0])] if rows else new_headers)
+        
+        # If there are duplicate columns, keep only the first occurrence
+        df = df.loc[:, ~df.columns.duplicated()]
+        
+        # Ensure we have the expected columns
+        for col in expected_headers:
+            if col not in df.columns:
+                df[col] = ''
+        
+        return df[expected_headers] if not df.empty else pd.DataFrame(columns=expected_headers)
     except Exception as e:
         st.error(f"Error reading {sheet_name}: {str(e)}")
         return pd.DataFrame()
 
 def add_row(service, sheet_name, row_data):
-    """Add row to sheet with detailed error handling"""
+    """Add row to sheet"""
     try:
-        # Check if sheet exists
-        try:
-            service.spreadsheets().values().get(
-                spreadsheetId=get_sheet_id(),
-                range=f"{sheet_name}!A1"
-            ).execute()
-        except Exception as e:
-            st.error(f"❌ Sheet '{sheet_name}' may not exist. Error: {str(e)}")
-            st.info("Create a sheet named exactly as the error shows.")
-            return False
-        
         body = {'values': [row_data]}
         result = service.spreadsheets().values().append(
             spreadsheetId=get_sheet_id(),
@@ -85,16 +96,9 @@ def add_row(service, sheet_name, row_data):
             valueInputOption='USER_ENTERED',
             body=body
         ).execute()
-        
-        # Check if row was added
-        updated_rows = result.get('updates', {}).get('updatedRows', 0)
-        if updated_rows > 0:
-            return True
-        else:
-            st.error("Row was not added. No error but no rows updated.")
-            return False
+        return result.get('updates', {}).get('updatedRows', 0) > 0
     except Exception as e:
-        st.error(f"❌ Error adding row to {sheet_name}: {str(e)}")
+        st.error(f"❌ Error adding row: {str(e)}")
         return False
 
 def update_data(service, sheet_name, df):
@@ -121,7 +125,6 @@ def update_data(service, sheet_name, df):
 def create_sheet_if_not_exists(service, sheet_name, headers):
     """Create sheet with headers if not exists"""
     try:
-        # Check if sheet exists
         spreadsheet = service.spreadsheets().get(
             spreadsheetId=get_sheet_id()
         ).execute()
@@ -129,7 +132,6 @@ def create_sheet_if_not_exists(service, sheet_name, headers):
         sheet_names = [sheet['properties']['title'] for sheet in sheets]
         
         if sheet_name not in sheet_names:
-            st.info(f"📝 Creating sheet: {sheet_name}")
             body = {
                 'requests': [{
                     'addSheet': {
@@ -149,6 +151,10 @@ def create_sheet_if_not_exists(service, sheet_name, headers):
             # Check if headers exist
             df = get_data(service, sheet_name)
             if df.empty:
+                df = pd.DataFrame(columns=headers)
+                update_data(service, sheet_name, df)
+            elif list(df.columns) != headers:
+                # Headers don't match, update them
                 df = pd.DataFrame(columns=headers)
                 update_data(service, sheet_name, df)
         return True
@@ -234,11 +240,8 @@ def main():
     service = get_sheets_service()
     if service:
         try:
-            # Test connection by getting spreadsheet info
             test = service.spreadsheets().get(spreadsheetId=get_sheet_id()).execute()
             st.sidebar.success(f"✅ Connected to: {test.get('properties', {}).get('title', 'Unknown')}")
-            
-            # Initialize sheets
             init_sheets(service)
             st.sidebar.success("✅ Sheets ready")
         except Exception as e:
@@ -338,17 +341,6 @@ def main():
             st.error("❌ Not connected to Google Sheets")
             return
         
-        # Check if Parties sheet exists
-        try:
-            # Test if Parties sheet exists
-            service.spreadsheets().values().get(
-                spreadsheetId=get_sheet_id(),
-                range="Parties!A1"
-            ).execute()
-        except Exception as e:
-            st.warning("⚠️ Parties sheet may not exist. Creating it...")
-            create_sheet_if_not_exists(service, 'Parties', ['Party ID', 'Party Name', 'Mobile', 'WhatsApp', 'Address', 'Opening Balance', 'GST No'])
-        
         parties = get_data(service, 'Parties')
         
         tab1, tab2 = st.tabs(["Manage Parties", "Add Party"])
@@ -400,10 +392,8 @@ def main():
                     if not party_name:
                         st.error("❌ Party Name is required!")
                     else:
-                        # Generate Party ID
                         party_id = get_next_party_id(service)
                         
-                        # Prepare row data
                         row_data = [
                             party_id,
                             party_name,
@@ -415,9 +405,7 @@ def main():
                         ]
                         
                         st.info(f"📝 Adding: {party_name} (ID: {party_id})")
-                        st.write("Data to add:", row_data)
                         
-                        # Try to add
                         success = add_row(service, 'Parties', row_data)
                         
                         if success:
@@ -425,11 +413,7 @@ def main():
                             st.balloons()
                             st.rerun()
                         else:
-                            st.error("❌ Failed to add party. Check the error above.")
-                            st.info("Make sure:")
-                            st.info("1. You've shared the sheet with detergent-billing@detergent-billing.iam.gserviceaccount.com")
-                            st.info("2. The sheet has EDITOR permission, not just VIEWER")
-                            st.info("3. There is a sheet named 'Parties' in your spreadsheet")
+                            st.error("❌ Failed to add party.")
 
     # ==================== BILLING ====================
     elif menu == "🧾 Billing":
