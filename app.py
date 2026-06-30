@@ -1,5 +1,5 @@
 """
-Simple Detergent Billing App - Fixed Duplicate Columns
+Simple Detergent Billing App - Safe Version (No Overwrite)
 """
 
 import streamlit as st
@@ -39,7 +39,7 @@ def get_sheet_id():
     return "1jaat8u_k7rQyqhPcdL4zmUkkuG8gpwwk6z-Tvv2SMrQ"
 
 def get_data(service, sheet_name):
-    """Get data from sheet - handles duplicate columns"""
+    """Get data from sheet - SAFE READ ONLY"""
     try:
         result = service.spreadsheets().values().get(
             spreadsheetId=get_sheet_id(),
@@ -48,46 +48,16 @@ def get_data(service, sheet_name):
         values = result.get('values', [])
         if not values:
             return pd.DataFrame()
-        
         headers = values[0]
         rows = values[1:]
-        
-        # Fix duplicate column names
-        seen = {}
-        new_headers = []
-        for h in headers:
-            if h in seen:
-                seen[h] += 1
-                new_headers.append(f"{h}_{seen[h]}")
-            else:
-                seen[h] = 1
-                new_headers.append(h)
-        
-        # Only use first 7 columns (Party ID, Party Name, Mobile, WhatsApp, Address, Opening Balance, GST No)
-        expected_headers = ['Party ID', 'Party Name', 'Mobile', 'WhatsApp', 'Address', 'Opening Balance', 'GST No']
-        
-        # If we have fewer columns, pad with empty
-        if len(new_headers) < len(expected_headers):
-            new_headers.extend(expected_headers[len(new_headers):])
-        
-        # Create dataframe with fixed headers
-        df = pd.DataFrame(rows, columns=new_headers[:len(rows[0])] if rows else new_headers)
-        
-        # If there are duplicate columns, keep only the first occurrence
-        df = df.loc[:, ~df.columns.duplicated()]
-        
-        # Ensure we have the expected columns
-        for col in expected_headers:
-            if col not in df.columns:
-                df[col] = ''
-        
-        return df[expected_headers] if not df.empty else pd.DataFrame(columns=expected_headers)
+        df = pd.DataFrame(rows, columns=headers)
+        return df
     except Exception as e:
         st.error(f"Error reading {sheet_name}: {str(e)}")
         return pd.DataFrame()
 
-def add_row(service, sheet_name, row_data):
-    """Add row to sheet"""
+def add_row_only(service, sheet_name, row_data):
+    """ONLY ADD - NEVER OVERWRITE"""
     try:
         body = {'values': [row_data]}
         result = service.spreadsheets().values().append(
@@ -101,29 +71,8 @@ def add_row(service, sheet_name, row_data):
         st.error(f"❌ Error adding row: {str(e)}")
         return False
 
-def update_data(service, sheet_name, df):
-    """Update entire sheet"""
-    try:
-        service.spreadsheets().values().clear(
-            spreadsheetId=get_sheet_id(),
-            range=f"{sheet_name}!A:Z",
-            body={}
-        ).execute()
-        if not df.empty:
-            values = [df.columns.tolist()] + df.values.tolist()
-            service.spreadsheets().values().update(
-                spreadsheetId=get_sheet_id(),
-                range=f"{sheet_name}!A1",
-                valueInputOption='USER_ENTERED',
-                body={'values': values}
-            ).execute()
-        return True
-    except Exception as e:
-        st.error(f"Error updating: {str(e)}")
-        return False
-
 def create_sheet_if_not_exists(service, sheet_name, headers):
-    """Create sheet with headers if not exists"""
+    """Create sheet ONLY if it doesn't exist - DON'T OVERWRITE"""
     try:
         spreadsheet = service.spreadsheets().get(
             spreadsheetId=get_sheet_id()
@@ -131,32 +80,32 @@ def create_sheet_if_not_exists(service, sheet_name, headers):
         sheets = spreadsheet.get('sheets', [])
         sheet_names = [sheet['properties']['title'] for sheet in sheets]
         
-        if sheet_name not in sheet_names:
-            body = {
-                'requests': [{
-                    'addSheet': {
-                        'properties': {'title': sheet_name}
-                    }
-                }]
-            }
-            service.spreadsheets().batchUpdate(
-                spreadsheetId=get_sheet_id(),
-                body=body
-            ).execute()
-            
-            df = pd.DataFrame(columns=headers)
-            update_data(service, sheet_name, df)
+        # If sheet exists, DON'T overwrite
+        if sheet_name in sheet_names:
             return True
-        else:
-            # Check if headers exist
-            df = get_data(service, sheet_name)
-            if df.empty:
-                df = pd.DataFrame(columns=headers)
-                update_data(service, sheet_name, df)
-            elif list(df.columns) != headers:
-                # Headers don't match, update them
-                df = pd.DataFrame(columns=headers)
-                update_data(service, sheet_name, df)
+        
+        # Only create if it doesn't exist
+        body = {
+            'requests': [{
+                'addSheet': {
+                    'properties': {'title': sheet_name}
+                }
+            }]
+        }
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=get_sheet_id(),
+            body=body
+        ).execute()
+        
+        # Add headers to new sheet
+        df = pd.DataFrame(columns=headers)
+        values = [df.columns.tolist()]
+        service.spreadsheets().values().update(
+            spreadsheetId=get_sheet_id(),
+            range=f"{sheet_name}!A1",
+            valueInputOption='USER_ENTERED',
+            body={'values': values}
+        ).execute()
         return True
     except Exception as e:
         st.error(f"Error creating sheet: {str(e)}")
@@ -165,7 +114,7 @@ def create_sheet_if_not_exists(service, sheet_name, headers):
 # ==================== INIT ====================
 
 def init_sheets(service):
-    """Initialize sheets with headers"""
+    """Initialize sheets - ONLY CREATE IF MISSING, NEVER OVERWRITE"""
     try:
         sheets = {
             'Products': ['Product ID', 'Product Name', 'Rate', 'Stock'],
@@ -176,7 +125,7 @@ def init_sheets(service):
         for sheet_name, headers in sheets.items():
             create_sheet_if_not_exists(service, sheet_name, headers)
         
-        # Add default products
+        # ONLY add default products if Products sheet is empty
         products = get_data(service, 'Products')
         if products.empty:
             defaults = [
@@ -185,8 +134,8 @@ def init_sheets(service):
                 ['P003', 'Dishwash Liquid 7+1', 840, 50],
                 ['P004', 'Detergent Powder 7+1', 840, 50]
             ]
-            df = pd.DataFrame(defaults, columns=['Product ID', 'Product Name', 'Rate', 'Stock'])
-            update_data(service, 'Products', df)
+            for product in defaults:
+                add_row_only(service, 'Products', product)
         
         return True
     except Exception as e:
@@ -226,6 +175,33 @@ def get_next_party_id(service):
         return f"PT{next_num:03d}"
     except:
         return "PT001"
+
+def update_stock(service, product_name, change):
+    """Update stock - ONLY UPDATE, NOT OVERWRITE"""
+    products = get_data(service, 'Products')
+    if products.empty:
+        return False
+    
+    idx = products[products['Product Name'] == product_name].index
+    if idx.empty:
+        return False
+    
+    current_stock = int(products.loc[idx[0], 'Stock'])
+    products.loc[idx[0], 'Stock'] = current_stock + change
+    
+    # Update only the specific cell
+    try:
+        row_num = idx[0] + 2  # +2 because header is row 1 and index is 0-based
+        service.spreadsheets().values().update(
+            spreadsheetId=get_sheet_id(),
+            range=f"Products!D{row_num}",
+            valueInputOption='USER_ENTERED',
+            body={'values': [[str(products.loc[idx[0], 'Stock'])]]}
+        ).execute()
+        return True
+    except Exception as e:
+        st.error(f"Error updating stock: {str(e)}")
+        return False
 
 # ==================== MAIN APP ====================
 
@@ -306,11 +282,9 @@ def main():
                     change = st.number_input("Change (+/-)", value=0, step=1)
                     if st.button("Update Stock"):
                         if change != 0:
-                            idx = products[products['Product Name'] == selected].index[0]
-                            products.loc[idx, 'Stock'] = int(products.loc[idx, 'Stock']) + change
-                            update_data(service, 'Products', products)
-                            st.success(f"✅ Stock updated! {selected}: {change}")
-                            st.rerun()
+                            if update_stock(service, selected, change):
+                                st.success(f"✅ Stock updated! {selected}: {change}")
+                                st.rerun()
             else:
                 st.info("No products available")
         
@@ -327,7 +301,7 @@ def main():
                     if name and rate > 0:
                         products = get_data(service, 'Products')
                         product_id = f"P{len(products)+1:03d}"
-                        add_row(service, 'Products', [product_id, name, rate, stock])
+                        add_row_only(service, 'Products', [product_id, name, rate, stock])
                         st.success(f"✅ Product '{name}' added!")
                         st.rerun()
                     else:
@@ -406,7 +380,7 @@ def main():
                         
                         st.info(f"📝 Adding: {party_name} (ID: {party_id})")
                         
-                        success = add_row(service, 'Parties', row_data)
+                        success = add_row_only(service, 'Parties', row_data)
                         
                         if success:
                             st.success(f"✅ Party '{party_name}' added successfully!")
@@ -486,7 +460,7 @@ def main():
                 invoice_no = get_next_invoice(service)
                 total = sum(item['Amount'] for item in st.session_state.cart)
                 
-                add_row(service, 'Sales', [
+                add_row_only(service, 'Sales', [
                     invoice_no,
                     datetime.now().strftime("%Y-%m-%d %H:%M"),
                     party,
@@ -495,9 +469,7 @@ def main():
                 ])
                 
                 for item in st.session_state.cart:
-                    idx = products[products['Product Name'] == item['Product']].index[0]
-                    products.loc[idx, 'Stock'] = int(products.loc[idx, 'Stock']) - item['Qty']
-                update_data(service, 'Products', products)
+                    update_stock(service, item['Product'], -item['Qty'])
                 
                 st.success(f"✅ Invoice {invoice_no} generated! Total: ₹{total:,.2f}")
                 
