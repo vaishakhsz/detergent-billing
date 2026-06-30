@@ -1,5 +1,5 @@
 """
-Simple Detergent Billing App - Safe Version (No Overwrite)
+Simple Detergent Billing App - Safe Version (Handles Missing Data)
 """
 
 import streamlit as st
@@ -72,8 +72,9 @@ def add_row_only(service, sheet_name, row_data):
         return False
 
 def create_sheet_if_not_exists(service, sheet_name, headers):
-    """Create sheet ONLY if it doesn't exist - DON'T OVERWRITE"""
+    """Create sheet ONLY if it doesn't exist"""
     try:
+        # Check if sheet exists
         spreadsheet = service.spreadsheets().get(
             spreadsheetId=get_sheet_id()
         ).execute()
@@ -82,6 +83,17 @@ def create_sheet_if_not_exists(service, sheet_name, headers):
         
         # If sheet exists, DON'T overwrite
         if sheet_name in sheet_names:
+            # Check if headers exist
+            df = get_data(service, sheet_name)
+            if df.empty:
+                # Sheet exists but empty, add headers
+                values = [headers]
+                service.spreadsheets().values().update(
+                    spreadsheetId=get_sheet_id(),
+                    range=f"{sheet_name}!A1",
+                    valueInputOption='USER_ENTERED',
+                    body={'values': values}
+                ).execute()
             return True
         
         # Only create if it doesn't exist
@@ -98,8 +110,7 @@ def create_sheet_if_not_exists(service, sheet_name, headers):
         ).execute()
         
         # Add headers to new sheet
-        df = pd.DataFrame(columns=headers)
-        values = [df.columns.tolist()]
+        values = [headers]
         service.spreadsheets().values().update(
             spreadsheetId=get_sheet_id(),
             range=f"{sheet_name}!A1",
@@ -114,7 +125,7 @@ def create_sheet_if_not_exists(service, sheet_name, headers):
 # ==================== INIT ====================
 
 def init_sheets(service):
-    """Initialize sheets - ONLY CREATE IF MISSING, NEVER OVERWRITE"""
+    """Initialize sheets - ONLY CREATE IF MISSING"""
     try:
         sheets = {
             'Products': ['Product ID', 'Product Name', 'Rate', 'Stock'],
@@ -326,11 +337,16 @@ def main():
                 st.warning("⚠️ No parties found in Google Sheets")
                 st.info("Go to 'Add Party' tab to add a new party")
             else:
-                st.success(f"✅ Found {len(parties)} parties")
-                st.dataframe(parties, use_container_width=True)
-                
-                # Show party details
-                if 'Party Name' in parties.columns:
+                # Check if required columns exist
+                if 'Party Name' not in parties.columns:
+                    st.error("❌ 'Party Name' column not found! Please check your Google Sheet.")
+                    st.write("Expected columns:", ['Party ID', 'Party Name', 'Mobile', 'WhatsApp', 'Address', 'Opening Balance', 'GST No'])
+                    st.write("Current columns:", list(parties.columns))
+                else:
+                    st.success(f"✅ Found {len(parties)} parties")
+                    st.dataframe(parties, use_container_width=True)
+                    
+                    # Show party details
                     st.subheader("📌 Party Details")
                     selected_party = st.selectbox("Select a party", parties['Party Name'].tolist())
                     if selected_party:
@@ -406,6 +422,13 @@ def main():
         
         if parties.empty:
             st.warning("⚠️ No parties! Add parties first.")
+            return
+        
+        # Check if 'Party Name' exists
+        if 'Party Name' not in parties.columns:
+            st.error("❌ 'Party Name' column not found in Parties sheet!")
+            st.write("Current columns:", list(parties.columns))
+            st.info("Please check your Google Sheet and make sure the Parties sheet has the correct headers.")
             return
         
         col1, col2 = st.columns([2, 1])
