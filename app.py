@@ -1,5 +1,5 @@
 """
-Simple Detergent Billing App - Fixed Stock Update
+Simple Detergent Billing App - With Caching to Avoid Quota Limits
 """
 
 import streamlit as st
@@ -8,6 +8,7 @@ from datetime import datetime
 import json
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+import time
 
 # ==================== PAGE CONFIG ====================
 st.set_page_config(
@@ -38,8 +39,16 @@ def get_sheets_service():
 def get_sheet_id():
     return "1jaat8u_k7rQyqhPcdL4zmUkkuG8gpwwk6z-Tvv2SMrQ"
 
-def get_data(service, sheet_name):
-    """Get data from sheet"""
+# ==================== CACHED DATA FUNCTIONS ====================
+
+@st.cache_data(ttl=60)  # Cache for 60 seconds to reduce API calls
+def get_data_cached(service_key, sheet_name):
+    """Get data from sheet with caching"""
+    # We can't cache the service object, so we recreate it
+    service = get_sheets_service()
+    if not service:
+        return pd.DataFrame()
+    
     try:
         result = service.spreadsheets().values().get(
             spreadsheetId=get_sheet_id(),
@@ -53,8 +62,17 @@ def get_data(service, sheet_name):
         df = pd.DataFrame(rows, columns=headers)
         return df
     except Exception as e:
+        if "429" in str(e):
+            st.warning("⏳ Rate limit reached. Please wait a moment and try again.")
+            # Return cached data if available
+            return pd.DataFrame()
         st.error(f"Error reading {sheet_name}: {str(e)}")
         return pd.DataFrame()
+
+def get_data(service, sheet_name):
+    """Get data - uses cache"""
+    # Use a dummy key to trigger caching
+    return get_data_cached("cached", sheet_name)
 
 def add_row_only(service, sheet_name, row_data):
     """ONLY ADD - NEVER OVERWRITE"""
@@ -66,6 +84,8 @@ def add_row_only(service, sheet_name, row_data):
             valueInputOption='USER_ENTERED',
             body=body
         ).execute()
+        # Clear cache after adding
+        st.cache_data.clear()
         return result.get('updates', {}).get('updatedRows', 0) > 0
     except Exception as e:
         st.error(f"❌ Error adding row: {str(e)}")
@@ -191,7 +211,6 @@ def update_stock(service, product_name, change):
         if idx.empty:
             return False
         
-        # Get current stock - handle both string and number
         current_stock_str = str(products.loc[idx[0], 'Stock']).strip()
         try:
             current_stock = int(float(current_stock_str))
@@ -199,11 +218,8 @@ def update_stock(service, product_name, change):
             current_stock = 0
         
         new_stock = current_stock + change
-        
-        # Find the row number in Google Sheets (header is row 1, so data starts at row 2)
         row_num = idx[0] + 2
         
-        # Update only the specific cell
         service.spreadsheets().values().update(
             spreadsheetId=get_sheet_id(),
             range=f"Products!D{row_num}",
@@ -211,6 +227,8 @@ def update_stock(service, product_name, change):
             body={'values': [[str(new_stock)]]}
         ).execute()
         
+        # Clear cache after updating
+        st.cache_data.clear()
         return True
     except Exception as e:
         st.error(f"Error updating stock: {str(e)}")
@@ -251,9 +269,13 @@ def main():
             st.sidebar.success(f"✅ Connected to: {test.get('properties', {}).get('title', 'Unknown')}")
             init_sheets(service)
             st.sidebar.success("✅ Sheets ready")
+            st.sidebar.info("⏳ Data cached for 60 seconds")
         except Exception as e:
-            st.sidebar.error(f"❌ Can't access spreadsheet: {str(e)}")
-            st.sidebar.info("💡 Share the sheet with: detergent-billing@detergent-billing.iam.gserviceaccount.com")
+            if "429" in str(e):
+                st.sidebar.warning("⏳ Rate limit reached. Please wait.")
+            else:
+                st.sidebar.error(f"❌ Can't access spreadsheet: {str(e)}")
+                st.sidebar.info("💡 Share the sheet with: detergent-billing@detergent-billing.iam.gserviceaccount.com")
     else:
         st.sidebar.warning("⚠️ Check your secrets.toml file")
     
@@ -282,7 +304,6 @@ def main():
         col1.metric("📦 Products", len(products))
         col2.metric("🏪 Parties", len(parties))
         
-        # Safely calculate total sales
         total_sales = 0
         if not sales.empty and 'Total' in sales.columns:
             for val in sales['Total']:
@@ -309,7 +330,6 @@ def main():
         
         with tab1:
             if not products.empty:
-                # Convert stock to numbers for display
                 display_products = products.copy()
                 if 'Stock' in display_products.columns:
                     display_products['Stock'] = display_products['Stock'].apply(safe_int)
