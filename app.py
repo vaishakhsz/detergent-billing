@@ -892,16 +892,13 @@ def main():
                     st.components.v1.html(receipt_html, height=700)
 
 
-     # ==================== CASH RECEIPT ====================
-        elif menu == "💰 Cash Receipt":
-            
-            st.header("💰 Cash Receipt Entry")
-            
+      ==================== CASH RECEIPT ====================
+    elif menu == "💰 Cash Receipt":
+        st.header("💰 Cash Receipt Entry")
         
-            parties = get_parties()
-            sales = get_sales()
-            receipts = get_receipts()
-        
+        parties = get_parties()
+        sales = get_sales()
+        receipts = get_receipts()
         
         if parties.empty:
             st.warning("⚠️ No parties! Add parties first.")
@@ -1061,7 +1058,7 @@ def main():
                                 # Update invoice status in session
                                 st.rerun()
 
-    # ==================== END CASH RECEIPT ====================
+    # ==================== END CASH RECEIPT ================ #
 
     # ==================== PARTY LEDGER ====================
     elif menu == "📒 Party Ledger":
