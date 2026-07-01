@@ -1,6 +1,6 @@
 """
-Detergent Billing System - Fully Working
-With Cash Receipt Printing
+Detergent Billing System - Complete Working Version
+With Full Database Viewer
 """
 
 import streamlit as st
@@ -8,7 +8,7 @@ import pandas as pd
 import sqlite3
 from datetime import datetime, timedelta
 import os
-import base64
+import shutil
 
 # ==================== PAGE CONFIG ====================
 st.set_page_config(
@@ -85,6 +85,68 @@ def init_db():
 
 def get_conn():
     return sqlite3.connect('detergent_billing.db')
+
+# ==================== DATABASE UTILITY FUNCTIONS ====================
+
+def get_all_tables():
+    """Get list of all tables in database"""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+    tables = [row[0] for row in c.fetchall()]
+    conn.close()
+    return tables
+
+def get_table_data(table_name):
+    """Get all data from a table"""
+    conn = get_conn()
+    try:
+        df = pd.read_sql_query(f"SELECT * FROM {table_name}", conn)
+    except:
+        df = pd.DataFrame()
+    conn.close()
+    return df
+
+def get_db_size():
+    """Get database file size"""
+    try:
+        size = os.path.getsize('detergent_billing.db')
+        if size < 1024:
+            return f"{size} bytes"
+        elif size < 1024 * 1024:
+            return f"{size / 1024:.2f} KB"
+        else:
+            return f"{size / (1024 * 1024):.2f} MB"
+    except:
+        return "0 bytes"
+
+def get_row_count(table_name):
+    """Get number of rows in a table"""
+    conn = get_conn()
+    c = conn.cursor()
+    try:
+        c.execute(f"SELECT COUNT(*) FROM {table_name}")
+        count = c.fetchone()[0]
+    except:
+        count = 0
+    conn.close()
+    return count
+
+def create_backup():
+    """Create a backup of the database"""
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    backup_name = f"backup_{timestamp}.db"
+    shutil.copy2('detergent_billing.db', backup_name)
+    return backup_name
+
+def get_table_columns(table_name):
+    """Get column names of a table"""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(f"PRAGMA table_info({table_name})")
+    columns = [col[1] for col in c.fetchall()]
+    conn.close()
+    return columns
 
 # ==================== PRODUCT FUNCTIONS ====================
 
@@ -204,7 +266,6 @@ def get_next_invoice_no():
     return "INV0001"
 
 def create_invoice(party, cart):
-    """Create invoice and return invoice_no, total"""
     conn = get_conn()
     c = conn.cursor()
     
@@ -212,11 +273,9 @@ def create_invoice(party, cart):
     total = sum(item['amount'] for item in cart)
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     
-    # Insert into sales
     c.execute("INSERT INTO sales (invoice_no, date, party, total, status) VALUES (?, ?, ?, ?, ?)",
               (invoice_no, now, party, total, 'Unpaid'))
     
-    # Insert items and update stock
     for item in cart:
         c.execute("INSERT INTO sales_items (invoice_no, product_id, product_name, qty, rate, amount) VALUES (?, ?, ?, ?, ?, ?)",
                   (invoice_no, item['product_id'], item['name'], item['qty'], item['rate'], item['amount']))
@@ -272,7 +331,6 @@ def add_receipt(party, invoice_no, amount, payment_mode, remarks):
     c.execute("INSERT INTO receipts (receipt_no, date, party, invoice_no, amount, payment_mode, remarks) VALUES (?, ?, ?, ?, ?, ?, ?)",
               (receipt_no, now, party, invoice_no, amount, payment_mode, remarks))
     
-    # Update invoice status
     total = get_invoice_total(invoice_no)
     paid = get_invoice_paid(invoice_no) + amount
     
@@ -289,14 +347,6 @@ def add_receipt(party, invoice_no, amount, payment_mode, remarks):
     
     return receipt_no
 
-# ==================== HELPERS ====================
-
-def safe_float(value):
-    try:
-        return float(value) if value else 0.0
-    except:
-        return 0.0
-
 # ==================== INIT DATA ====================
 
 def init_data():
@@ -308,14 +358,16 @@ def init_data():
             ('P003', 'Dishwash Liquid 7+1', 840, 50, 'Detergent', 'Pack'),
             ('P004', 'Detergent Powder 7+1', 840, 50, 'Detergent', 'Pack')
         ]
+        conn = get_conn()
+        c = conn.cursor()
         for p in defaults:
-            add_product(*p)
+            c.execute("INSERT INTO products (product_id, name, rate, stock, brand, unit) VALUES (?, ?, ?, ?, ?, ?)", p)
+        conn.commit()
+        conn.close()
 
-# ==================== RECEIPT HTML GENERATORS ====================
+# ==================== RECEIPT HTML ====================
 
 def get_invoice_receipt_html(invoice_no, party, cart, total, paid, balance):
-    """Generate printable invoice receipt HTML"""
-    
     items_html = ""
     for item in cart:
         items_html += f"""
@@ -333,397 +385,52 @@ def get_invoice_receipt_html(invoice_no, party, cart, total, paid, balance):
     html = f"""
     <!DOCTYPE html>
     <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>Invoice {invoice_no}</title>
-        <style>
-            @media print {{
-                .no-print {{ display: none; }}
-                body {{ margin: 0; padding: 20px; }}
-                .receipt {{ box-shadow: none; }}
-            }}
-            body {{
-                font-family: 'Courier New', monospace;
-                background: #f5f5f5;
-                display: flex;
-                justify-content: center;
-                padding: 20px;
-            }}
-            .receipt {{
-                background: white;
-                width: 320px;
-                padding: 20px;
-                box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-                border-radius: 8px;
-            }}
-            .header {{
-                text-align: center;
-                border-bottom: 2px dashed #333;
-                padding-bottom: 10px;
-                margin-bottom: 10px;
-            }}
-            .header h1 {{
-                margin: 0;
-                font-size: 20px;
-                color: #003366;
-            }}
-            .header p {{
-                margin: 2px 0;
-                font-size: 12px;
-                color: #666;
-            }}
-            .details {{
-                font-size: 12px;
-                margin-bottom: 10px;
-                padding: 5px 0;
-                border-bottom: 1px dotted #ccc;
-            }}
-            .details .row {{
-                display: flex;
-                justify-content: space-between;
-                padding: 2px 0;
-            }}
-            table {{
-                width: 100%;
-                font-size: 12px;
-                border-collapse: collapse;
-                margin: 10px 0;
-            }}
-            th {{
-                text-align: left;
-                border-bottom: 1px solid #333;
-                padding: 5px 2px;
-                font-size: 11px;
-            }}
-            td {{
-                padding: 4px 2px;
-                border-bottom: 1px dotted #ddd;
-            }}
-            .right {{ text-align: right; }}
-            .center {{ text-align: center; }}
-            .total-section {{
-                margin-top: 10px;
-                padding-top: 10px;
-                border-top: 2px dashed #333;
-            }}
-            .total-row {{
-                display: flex;
-                justify-content: space-between;
-                font-size: 14px;
-                padding: 3px 0;
-            }}
-            .total-row.bold {{
-                font-weight: bold;
-                font-size: 16px;
-            }}
-            .footer {{
-                text-align: center;
-                font-size: 11px;
-                color: #666;
-                margin-top: 15px;
-                padding-top: 10px;
-                border-top: 2px dashed #333;
-            }}
-            .footer .thank {{
-                font-size: 14px;
-                font-weight: bold;
-                color: #003366;
-            }}
-            .status {{
-                text-align: center;
-                margin: 10px 0;
-                padding: 5px;
-                border-radius: 4px;
-                font-weight: bold;
-            }}
-            .status.paid {{ background: #e8f5e9; color: #2e7d32; }}
-            .status.unpaid {{ background: #ffebee; color: #c62828; }}
-            .status.partial {{ background: #fff3e0; color: #e65100; }}
-            .no-print {{
-                text-align: center;
-                margin-top: 20px;
-            }}
-            .no-print button {{
-                padding: 10px 30px;
-                font-size: 16px;
-                background: #003366;
-                color: white;
-                border: none;
-                border-radius: 5px;
-                cursor: pointer;
-                margin: 0 5px;
-            }}
-            .no-print button:hover {{ background: #004488; }}
-        </style>
+    <head><meta charset="UTF-8"><title>Invoice {invoice_no}</title>
+    <style>
+        @media print {{ .no-print {{ display: none; }} body {{ margin: 0; padding: 20px; }} .receipt {{ box-shadow: none; }} }}
+        body {{ font-family: 'Courier New', monospace; background: #f5f5f5; display: flex; justify-content: center; padding: 20px; }}
+        .receipt {{ background: white; width: 320px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); border-radius: 8px; }}
+        .header {{ text-align: center; border-bottom: 2px dashed #333; padding-bottom: 10px; margin-bottom: 10px; }}
+        .header h1 {{ margin: 0; font-size: 20px; color: #003366; }}
+        .header p {{ margin: 2px 0; font-size: 12px; color: #666; }}
+        .details {{ font-size: 12px; margin-bottom: 10px; padding: 5px 0; border-bottom: 1px dotted #ccc; }}
+        .details .row {{ display: flex; justify-content: space-between; padding: 2px 0; }}
+        table {{ width: 100%; font-size: 12px; border-collapse: collapse; margin: 10px 0; }}
+        th {{ text-align: left; border-bottom: 1px solid #333; padding: 5px 2px; font-size: 11px; }}
+        td {{ padding: 4px 2px; border-bottom: 1px dotted #ddd; }}
+        .right {{ text-align: right; }}
+        .center {{ text-align: center; }}
+        .total-section {{ margin-top: 10px; padding-top: 10px; border-top: 2px dashed #333; }}
+        .total-row {{ display: flex; justify-content: space-between; font-size: 14px; padding: 3px 0; }}
+        .total-row.bold {{ font-weight: bold; font-size: 16px; }}
+        .footer {{ text-align: center; font-size: 11px; color: #666; margin-top: 15px; padding-top: 10px; border-top: 2px dashed #333; }}
+        .footer .thank {{ font-size: 14px; font-weight: bold; color: #003366; }}
+        .status {{ text-align: center; margin: 10px 0; padding: 5px; border-radius: 4px; font-weight: bold; }}
+        .status.paid {{ background: #e8f5e9; color: #2e7d32; }}
+        .status.unpaid {{ background: #ffebee; color: #c62828; }}
+        .status.partial {{ background: #fff3e0; color: #e65100; }}
+        .no-print {{ text-align: center; margin-top: 20px; }}
+        .no-print button {{ padding: 10px 30px; font-size: 16px; background: #003366; color: white; border: none; border-radius: 5px; cursor: pointer; margin: 0 5px; }}
+        .no-print button:hover {{ background: #004488; }}
+    </style>
     </head>
     <body>
         <div class="receipt">
-            <div class="header">
-                <h1>🧺 DETERGENT MART</h1>
-                <p>123 Main Street, City</p>
-                <p>Phone: +91 98765 43210</p>
-            </div>
-            
+            <div class="header"><h1>🧺 DETERGENT MART</h1><p>123 Main Street, City</p><p>Phone: +91 98765 43210</p></div>
             <div class="details">
-                <div class="row">
-                    <span><strong>Invoice:</strong> {invoice_no}</span>
-                    <span><strong>Date:</strong> {datetime.now().strftime('%d-%m-%Y %H:%M')}</span>
-                </div>
-                <div class="row">
-                    <span><strong>Party:</strong> {party}</span>
-                </div>
+                <div class="row"><span><strong>Invoice:</strong> {invoice_no}</span><span><strong>Date:</strong> {datetime.now().strftime('%d-%m-%Y %H:%M')}</span></div>
+                <div class="row"><span><strong>Party:</strong> {party}</span></div>
             </div>
-            
-            <table>
-                <thead>
-                    <tr>
-                        <th>Item</th>
-                        <th class="center">Qty</th>
-                        <th class="right">Rate</th>
-                        <th class="right">Amount</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {items_html}
-                </tbody>
-            </table>
-            
+            <table><thead><tr><th>Item</th><th class="center">Qty</th><th class="right">Rate</th><th class="right">Amount</th></tr></thead><tbody>{items_html}</tbody></table>
             <div class="total-section">
-                <div class="total-row">
-                    <span><strong>Total</strong></span>
-                    <span><strong>₹{total:.2f}</strong></span>
-                </div>
-                <div class="total-row">
-                    <span>Amount Paid</span>
-                    <span>₹{paid:.2f}</span>
-                </div>
-                <div class="total-row bold">
-                    <span>Balance</span>
-                    <span>₹{balance:.2f}</span>
-                </div>
+                <div class="total-row"><span><strong>Total</strong></span><span><strong>₹{total:.2f}</strong></span></div>
+                <div class="total-row"><span>Amount Paid</span><span>₹{paid:.2f}</span></div>
+                <div class="total-row bold"><span>Balance</span><span>₹{balance:.2f}</span></div>
             </div>
-            
             <div class="status {status_class}">{status_text}</div>
-            
-            <div class="footer">
-                <div class="thank">Thank You!</div>
-                <p>Visit Again | Items once sold cannot be returned</p>
-                <p>This is a system generated receipt</p>
-            </div>
+            <div class="footer"><div class="thank">Thank You!</div><p>Visit Again | Items once sold cannot be returned</p><p>This is a system generated receipt</p></div>
         </div>
-        
-        <div class="no-print">
-            <button onclick="window.print()">🖨️ Print Receipt</button>
-            <button onclick="window.close()">Close</button>
-        </div>
-    </body>
-    </html>
-    """
-    return html
-
-
-def get_payment_receipt_html(receipt_no, party, invoice_no, amount, payment_mode, remarks, balance, total):
-    """Generate printable payment receipt HTML"""
-    
-    html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>Payment Receipt {receipt_no}</title>
-        <style>
-            @media print {{
-                .no-print {{ display: none; }}
-                body {{ margin: 0; padding: 20px; }}
-                .receipt {{ box-shadow: none; }}
-            }}
-            body {{
-                font-family: 'Courier New', monospace;
-                background: #f5f5f5;
-                display: flex;
-                justify-content: center;
-                padding: 20px;
-            }}
-            .receipt {{
-                background: white;
-                width: 320px;
-                padding: 20px;
-                box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-                border-radius: 8px;
-            }}
-            .header {{
-                text-align: center;
-                border-bottom: 2px dashed #333;
-                padding-bottom: 10px;
-                margin-bottom: 10px;
-            }}
-            .header h1 {{
-                margin: 0;
-                font-size: 20px;
-                color: #003366;
-            }}
-            .header p {{
-                margin: 2px 0;
-                font-size: 12px;
-                color: #666;
-            }}
-            .details {{
-                font-size: 12px;
-                margin-bottom: 10px;
-                padding: 5px 0;
-                border-bottom: 1px dotted #ccc;
-            }}
-            .details .row {{
-                display: flex;
-                justify-content: space-between;
-                padding: 2px 0;
-            }}
-            .payment-info {{
-                background: #f0f7ff;
-                padding: 15px;
-                border-radius: 8px;
-                margin: 10px 0;
-            }}
-            .payment-info .row {{
-                display: flex;
-                justify-content: space-between;
-                padding: 4px 0;
-                font-size: 14px;
-            }}
-            .payment-info .row.bold {{
-                font-weight: bold;
-                font-size: 16px;
-            }}
-            .total-section {{
-                margin-top: 10px;
-                padding-top: 10px;
-                border-top: 2px dashed #333;
-            }}
-            .total-row {{
-                display: flex;
-                justify-content: space-between;
-                font-size: 14px;
-                padding: 3px 0;
-            }}
-            .total-row.bold {{
-                font-weight: bold;
-                font-size: 16px;
-            }}
-            .footer {{
-                text-align: center;
-                font-size: 11px;
-                color: #666;
-                margin-top: 15px;
-                padding-top: 10px;
-                border-top: 2px dashed #333;
-            }}
-            .footer .thank {{
-                font-size: 14px;
-                font-weight: bold;
-                color: #003366;
-            }}
-            .status {{
-                text-align: center;
-                margin: 10px 0;
-                padding: 5px;
-                border-radius: 4px;
-                font-weight: bold;
-                background: #e8f5e9;
-                color: #2e7d32;
-            }}
-            .no-print {{
-                text-align: center;
-                margin-top: 20px;
-            }}
-            .no-print button {{
-                padding: 10px 30px;
-                font-size: 16px;
-                background: #003366;
-                color: white;
-                border: none;
-                border-radius: 5px;
-                cursor: pointer;
-                margin: 0 5px;
-            }}
-            .no-print button:hover {{ background: #004488; }}
-            .remarks {{
-                font-size: 11px;
-                color: #666;
-                margin-top: 5px;
-                padding: 5px;
-                background: #f9f9f9;
-                border-radius: 4px;
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="receipt">
-            <div class="header">
-                <h1>🧺 DETERGENT MART</h1>
-                <p>123 Main Street, City</p>
-                <p>Phone: +91 98765 43210</p>
-            </div>
-            
-            <div class="details">
-                <div class="row">
-                    <span><strong>Payment Receipt</strong></span>
-                    <span><strong>#{receipt_no}</strong></span>
-                </div>
-                <div class="row">
-                    <span><strong>Date:</strong> {datetime.now().strftime('%d-%m-%Y %H:%M')}</span>
-                </div>
-            </div>
-            
-            <div class="payment-info">
-                <div class="row">
-                    <span>Party:</span>
-                    <span><strong>{party}</strong></span>
-                </div>
-                <div class="row">
-                    <span>Invoice No:</span>
-                    <span><strong>{invoice_no}</strong></span>
-                </div>
-                <div class="row bold">
-                    <span>Amount Received:</span>
-                    <span><strong>₹{amount:.2f}</strong></span>
-                </div>
-                <div class="row">
-                    <span>Payment Mode:</span>
-                    <span><strong>{payment_mode}</strong></span>
-                </div>
-            </div>
-            
-            <div class="total-section">
-                <div class="total-row">
-                    <span>Invoice Total</span>
-                    <span>₹{total:.2f}</span>
-                </div>
-                <div class="total-row">
-                    <span>Total Paid</span>
-                    <span>₹{total - balance:.2f}</span>
-                </div>
-                <div class="total-row bold">
-                    <span>Balance Due</span>
-                    <span>₹{balance:.2f}</span>
-                </div>
-            </div>
-            
-            <div class="status">
-                {'✅ PAID IN FULL' if balance <= 0 else f'⚠️ BALANCE DUE: ₹{balance:.2f}'}
-            </div>
-            
-            {f'<div class="remarks"><strong>Remarks:</strong> {remarks}</div>' if remarks else ''}
-            
-            <div class="footer">
-                <div class="thank">Thank You for Your Payment!</div>
-                <p>This is a system generated payment receipt</p>
-            </div>
-        </div>
-        
-        <div class="no-print">
-            <button onclick="window.print()">🖨️ Print Receipt</button>
-            <button onclick="window.close()">Close</button>
-        </div>
+        <div class="no-print"><button onclick="window.print()">🖨️ Print Receipt</button><button onclick="window.close()">Close</button></div>
     </body>
     </html>
     """
@@ -732,7 +439,6 @@ def get_payment_receipt_html(receipt_no, party, invoice_no, amount, payment_mode
 # ==================== MAIN APP ====================
 
 def main():
-    # Initialize
     init_db()
     init_data()
     
@@ -746,19 +452,18 @@ def main():
     menu = st.sidebar.radio(
         "Navigate",
         ["📊 Dashboard", "📦 Products", "🏪 Parties", "🧾 Billing", 
-         "💰 Cash Receipt", "📒 Party Ledger", "📈 Reports"]
+         "💰 Cash Receipt", "📒 Party Ledger", "📈 Reports", "🗄️ Database"]
     )
     
     st.sidebar.markdown("---")
+    
+    # Show database info in sidebar
+    st.sidebar.info(f"📁 DB Size: {get_db_size()}")
     st.sidebar.info("Made with ❤️ using Streamlit")
     
-    # Initialize cart in session state
+    # Initialize cart
     if 'cart' not in st.session_state:
         st.session_state.cart = []
-    
-    # Store last payment receipt
-    if 'last_payment' not in st.session_state:
-        st.session_state.last_payment = None
 
     # ==================== DASHBOARD ====================
     if menu == "📊 Dashboard":
@@ -914,7 +619,6 @@ def main():
                             st.rerun()
                 st.divider()
             
-            # Edit modal
             if 'edit_party_id' in st.session_state:
                 party = parties[parties['party_id'] == st.session_state.edit_party_id].iloc[0]
                 with st.expander(f"✏️ Editing: {party['name']}", expanded=True):
@@ -969,11 +673,11 @@ def main():
         parties = get_parties()
         
         if products.empty:
-            st.warning("⚠️ No products! Add products first.")
+            st.warning("⚠️ No products!")
             return
         
         if parties.empty:
-            st.warning("⚠️ No parties! Add parties first.")
+            st.warning("⚠️ No parties!")
             return
         
         col1, col2 = st.columns([2, 1])
@@ -1035,7 +739,6 @@ def main():
                     invoice_no, total = create_invoice(party, st.session_state.cart)
                     st.success(f"✅ Invoice {invoice_no} generated! Total: ₹{total:,.2f}")
                     
-                    # Show receipt
                     st.markdown("---")
                     st.subheader("🧾 Invoice Receipt")
                     
@@ -1051,21 +754,6 @@ def main():
                     
                     st.session_state.cart = []
                     st.rerun()
-        
-        with col2:
-            # Print last invoice if exists
-            if 'last_invoice' in st.session_state:
-                if st.button("🖨️ Print Last Invoice", use_container_width=True):
-                    inv = st.session_state.last_invoice
-                    receipt_html = get_invoice_receipt_html(
-                        inv['invoice_no'],
-                        inv['party'],
-                        inv['cart'],
-                        inv['total'],
-                        inv['paid'],
-                        inv['balance']
-                    )
-                    st.components.v1.html(receipt_html, height=700)
 
     # ==================== CASH RECEIPT ====================
     elif menu == "💰 Cash Receipt":
@@ -1073,7 +761,6 @@ def main():
         
         parties = get_parties()
         sales = get_sales()
-        receipts = get_receipts()
         
         if parties.empty:
             st.warning("⚠️ No parties!")
@@ -1091,7 +778,6 @@ def main():
             with col1:
                 party = st.selectbox("Party *", parties['name'].tolist())
                 
-                # Get unpaid invoices for this party
                 unpaid = sales[sales['status'] != 'Paid'] if not sales.empty else pd.DataFrame()
                 party_invoices = unpaid[unpaid['party'] == party] if party else pd.DataFrame()
                 
@@ -1128,12 +814,10 @@ def main():
                 elif amount <= 0:
                     st.error("❌ Amount must be > 0!")
                 else:
-                    # Verify invoice
                     invoice_data = sales[sales['invoice_no'] == final_invoice]
                     if invoice_data.empty:
                         st.error(f"❌ Invoice {final_invoice} not found!")
                     else:
-                        # Check if invoice belongs to party
                         if invoice_data.iloc[0]['party'] != party:
                             st.error(f"❌ Invoice belongs to {invoice_data.iloc[0]['party']}, not {party}!")
                         else:
@@ -1147,38 +831,7 @@ def main():
                                 receipt_no = add_receipt(party, final_invoice, amount, payment_mode, remarks)
                                 st.success(f"✅ Receipt {receipt_no} recorded! Amount: ₹{amount:,.2f}")
                                 st.balloons()
-                                
-                                # Store payment details for printing
-                                st.session_state.last_payment = {
-                                    'receipt_no': receipt_no,
-                                    'party': party,
-                                    'invoice_no': final_invoice,
-                                    'amount': amount,
-                                    'payment_mode': payment_mode,
-                                    'remarks': remarks,
-                                    'balance': balance - amount,
-                                    'total': total
-                                }
-                                
                                 st.rerun()
-        
-        # ==================== SHOW PAYMENT RECEIPT ====================
-        if 'last_payment' in st.session_state and st.session_state.last_payment:
-            st.markdown("---")
-            st.subheader("🧾 Payment Receipt")
-            
-            payment = st.session_state.last_payment
-            receipt_html = get_payment_receipt_html(
-                payment['receipt_no'],
-                payment['party'],
-                payment['invoice_no'],
-                payment['amount'],
-                payment['payment_mode'],
-                payment['remarks'],
-                payment['balance'],
-                payment['total']
-            )
-            st.components.v1.html(receipt_html, height=650)
 
     # ==================== PARTY LEDGER ====================
     elif menu == "📒 Party Ledger":
@@ -1210,7 +863,6 @@ def main():
                     transactions = []
                     balance = 0
                     
-                    # Opening balance
                     party_data = parties[parties['name'] == selected_party].iloc[0]
                     opening = float(party_data['opening_balance'])
                     balance = opening
@@ -1222,7 +874,6 @@ def main():
                         'Balance': balance
                     })
                     
-                    # Sales
                     for _, row in party_sales.iterrows():
                         amt = float(row['total'])
                         balance += amt
@@ -1234,7 +885,6 @@ def main():
                             'Balance': balance
                         })
                     
-                    # Receipts
                     for _, row in party_receipts.iterrows():
                         amt = float(row['amount'])
                         balance -= amt
@@ -1339,89 +989,119 @@ def main():
             else:
                 st.info("No receipts recorded")
 
+    # ==================== DATABASE VIEWER ====================
+    elif menu == "🗄️ Database":
+        st.header("🗄️ Database Management")
+        
+        # Get all tables
+        tables = get_all_tables()
+        
+        # Overview
+        st.subheader("📊 Database Overview")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("📋 Total Tables", len(tables))
+        with col2:
+            total_rows = sum(get_row_count(t) for t in tables)
+            st.metric("📝 Total Records", total_rows)
+        with col3:
+            st.metric("💾 Database Size", get_db_size())
+        with col4:
+            st.metric("📁 Tables", ", ".join(tables) if tables else "None")
+        
+        st.markdown("---")
+        
+        # View Tables
+        st.subheader("🔍 View Table Data")
+        
+        if tables:
+            selected_table = st.selectbox("Select Table to View", tables)
+            
+            if selected_table:
+                df = get_table_data(selected_table)
+                columns = get_table_columns(selected_table)
+                
+                st.write(f"**Table: {selected_table}**")
+                st.write(f"📊 {len(df)} records | 📋 Columns: {', '.join(columns)}")
+                
+                if not df.empty:
+                    st.dataframe(df, use_container_width=True)
+                    
+                    # Download CSV
+                    csv = df.to_csv(index=False)
+                    st.download_button(
+                        label=f"📥 Download {selected_table}.csv",
+                        data=csv,
+                        file_name=f"{selected_table}_{datetime.now().strftime('%Y%m%d')}.csv",
+                        mime="text/csv"
+                    )
+                else:
+                    st.info(f"Table '{selected_table}' is empty")
+        else:
+            st.info("No tables found in database")
+        
+        st.markdown("---")
+        
+        # Backup
+        st.subheader("💾 Backup Database")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("📀 Create Backup", type="primary"):
+                backup_file = create_backup()
+                st.success(f"✅ Backup created: {backup_file}")
+                
+                with open(backup_file, 'rb') as f:
+                    st.download_button(
+                        label="📥 Download Backup",
+                        data=f,
+                        file_name=backup_file,
+                        mime="application/octet-stream"
+                    )
+        
+        with col2:
+            st.info("""
+            💡 **Backup Location**
+            Backups are saved in your project folder.
+            File format: `backup_YYYYMMDD_HHMMSS.db`
+            """)
+        
+        st.markdown("---")
+        
+        # Export All
+        st.subheader("📤 Export All Data")
+        
+        if tables:
+            if st.button("📦 Export All Tables to Excel"):
+                try:
+                    with pd.ExcelWriter(f'export_all_data_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx', engine='openpyxl') as writer:
+                        for table in tables:
+                            df = get_table_data(table)
+                            if not df.empty:
+                                df.to_excel(writer, sheet_name=table[:31], index=False)
+                            else:
+                                pd.DataFrame().to_excel(writer, sheet_name=table[:31], index=False)
+                    
+                    st.success("✅ Export created!")
+                    
+                    # Find the latest export file
+                    export_files = [f for f in os.listdir() if f.startswith('export_all_data_') and f.endswith('.xlsx')]
+                    if export_files:
+                        latest = max(export_files)
+                        with open(latest, 'rb') as f:
+                            st.download_button(
+                                label="📥 Download All Data (Excel)",
+                                data=f,
+                                file_name=latest,
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            )
+                except Exception as e:
+                    st.error(f"Error creating export: {str(e)}")
+        else:
+            st.info("No tables to export")
+
 # ==================== RUN ====================
 
 if __name__ == "__main__":
     main()
-
-
-# ==================== DATABASE VIEWER ====================
-elif menu == "🗄️ Database":
-    st.header("🗄️ Database Management")
-    
-    st.subheader("📊 Database Overview")
-    
-    col1, col2, col3 = st.columns(3)
-    tables = get_all_tables()
-    
-    with col1:
-        st.metric("📋 Total Tables", len(tables))
-    with col2:
-        total_rows = sum(get_row_count(t) for t in tables)
-        st.metric("📝 Total Records", total_rows)
-    with col3:
-        st.metric("💾 Database Size", get_db_size())
-    
-    st.markdown("---")
-    
-    # View Tables
-    st.subheader("🔍 View Table Data")
-    selected_table = st.selectbox("Select Table", tables)
-    
-    if selected_table:
-        df = get_table_data(selected_table)
-        st.write(f"**Table: {selected_table}** ({len(df)} records)")
-        st.dataframe(df, use_container_width=True)
-        
-        csv = df.to_csv(index=False)
-        st.download_button(
-            label=f"📥 Download {selected_table}.csv",
-            data=csv,
-            file_name=f"{selected_table}.csv",
-            mime="text/csv"
-        )
-    
-    st.markdown("---")
-    
-    # Backup
-    st.subheader("💾 Backup Database")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("📀 Create Backup", type="primary"):
-            backup_file = create_backup()
-            st.success(f"✅ Backup created: {backup_file}")
-            
-            with open(backup_file, 'rb') as f:
-                st.download_button(
-                    label="📥 Download Backup",
-                    data=f,
-                    file_name=backup_file,
-                    mime="application/octet-stream"
-                )
-    
-    with col2:
-        st.info("""
-        💡 **Backup Location**
-        Backups are saved in your project folder.
-        File format: `backup_YYYYMMDD_HHMMSS.db`
-        """)
-    
-    st.markdown("---")
-    
-    # Export All
-    st.subheader("📤 Export All Data")
-    
-    if st.button("📦 Export All Tables to Excel"):
-        with pd.ExcelWriter('export_all_data.xlsx', engine='openpyxl') as writer:
-            for table in tables:
-                df = get_table_data(table)
-                df.to_excel(writer, sheet_name=table, index=False)
-        
-        with open('export_all_data.xlsx', 'rb') as f:
-            st.download_button(
-                label="📥 Download All Data (Excel)",
-                data=f,
-                file_name=f"export_all_data_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
