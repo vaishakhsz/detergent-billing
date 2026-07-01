@@ -1,6 +1,6 @@
 """
 Detergent Billing System - Complete Working Version
-Fixed: Excel Export with CSV Fallback
+Fixed: Force Delete, Invoice HTML View, Cash Receipt
 """
 
 import streamlit as st
@@ -151,7 +151,6 @@ def export_to_excel():
     filename_base = f"export_all_data_{timestamp}"
     
     try:
-        # Try Excel export first
         import openpyxl
         filename = f"{filename_base}.xlsx"
         with pd.ExcelWriter(filename, engine='openpyxl') as writer:
@@ -176,7 +175,6 @@ def export_to_excel():
                 pd.DataFrame().to_csv(csv_filename, index=False)
                 csv_files.append(csv_filename)
         
-        # Create zip file for multiple CSVs
         if len(csv_files) > 1:
             zip_filename = f"{filename_base}.zip"
             with zipfile.ZipFile(zip_filename, 'w') as zipf:
@@ -261,11 +259,34 @@ def update_party(party_id, name, mobile, whatsapp, address, opening_balance, gst
     conn.close()
 
 def delete_party(party_id):
+    """Force delete party - deletes all associated records too"""
     conn = get_conn()
     c = conn.cursor()
-    c.execute("DELETE FROM parties WHERE party_id=?", (party_id,))
-    conn.commit()
-    conn.close()
+    
+    try:
+        # Get party name for logging
+        c.execute("SELECT name FROM parties WHERE party_id = ?", (party_id,))
+        party_name = c.fetchone()
+        
+        if party_name:
+            # Delete sales items for this party's invoices
+            c.execute("DELETE FROM sales_items WHERE invoice_no IN (SELECT invoice_no FROM sales WHERE party = ?)", (party_name[0],))
+            
+            # Delete receipts for this party
+            c.execute("DELETE FROM receipts WHERE party = ?", (party_name[0],))
+            
+            # Delete sales for this party
+            c.execute("DELETE FROM sales WHERE party = ?", (party_name[0],))
+            
+            # Delete the party
+            c.execute("DELETE FROM parties WHERE party_id = ?", (party_id,))
+        
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        conn.close()
+        return False
 
 def get_next_party_id():
     conn = get_conn()
@@ -416,15 +437,29 @@ def init_data():
 
 def get_invoice_receipt_html(invoice_no, party, cart, total, paid, balance):
     items_html = ""
-    for item in cart:
-        items_html += f"""
-        <tr>
-            <td>{item['name']}</td>
-            <td style="text-align:center">{item['qty']:.0f}</td>
-            <td style="text-align:right">₹{item['rate']:.2f}</td>
-            <td style="text-align:right">₹{item['amount']:.2f}</td>
-        </tr>
-        """
+    if cart:
+        for item in cart:
+            items_html += f"""
+            <tr>
+                <td>{item['name']}</td>
+                <td style="text-align:center">{item['qty']:.0f}</td>
+                <td style="text-align:right">₹{item['rate']:.2f}</td>
+                <td style="text-align:right">₹{item['amount']:.2f}</td>
+            </tr>
+            """
+    else:
+        # If cart is empty, try to get items from database
+        items = get_sale_items(invoice_no)
+        if not items.empty:
+            for _, item in items.iterrows():
+                items_html += f"""
+                <tr>
+                    <td>{item['product_name']}</td>
+                    <td style="text-align:center">{item['qty']:.0f}</td>
+                    <td style="text-align:right">₹{item['rate']:.2f}</td>
+                    <td style="text-align:right">₹{item['amount']:.2f}</td>
+                </tr>
+                """
     
     status_class = 'paid' if balance <= 0 else 'partial' if paid > 0 else 'unpaid'
     status_text = '✅ PAID' if balance <= 0 else '⚠️ PARTIALLY PAID' if paid > 0 else '❌ UNPAID'
@@ -438,7 +473,7 @@ def get_invoice_receipt_html(invoice_no, party, cart, total, paid, balance):
         <style>
             @media print {{ .no-print {{ display: none; }} body {{ margin: 0; padding: 20px; }} .receipt {{ box-shadow: none; }} }}
             body {{ font-family: 'Courier New', monospace; background: #f5f5f5; display: flex; justify-content: center; padding: 20px; }}
-            .receipt {{ background: white; width: 320px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); border-radius: 8px; }}
+            .receipt {{ background: white; width: 350px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); border-radius: 8px; }}
             .header {{ text-align: center; border-bottom: 2px dashed #333; padding-bottom: 10px; margin-bottom: 10px; }}
             .header h1 {{ margin: 0; font-size: 20px; color: #003366; }}
             .header p {{ margin: 2px 0; font-size: 12px; color: #666; }}
@@ -465,21 +500,35 @@ def get_invoice_receipt_html(invoice_no, party, cart, total, paid, balance):
     </head>
     <body>
         <div class="receipt">
-            <div class="header"><h1>🧺 DETERGENT MART</h1><p>123 Main Street, City</p><p>Phone: +91 98765 43210</p></div>
+            <div class="header">
+                <h1>🧺 DETERGENT MART</h1>
+                <p>123 Main Street, City</p>
+                <p>Phone: +91 98765 43210</p>
+            </div>
             <div class="details">
                 <div class="row"><span><strong>Invoice:</strong> {invoice_no}</span><span><strong>Date:</strong> {datetime.now().strftime('%d-%m-%Y %H:%M')}</span></div>
                 <div class="row"><span><strong>Party:</strong> {party}</span></div>
             </div>
-            <table><thead><tr><th>Item</th><th class="center">Qty</th><th class="right">Rate</th><th class="right">Amount</th></tr></thead><tbody>{items_html}</tbody></table>
+            <table>
+                <thead><tr><th>Item</th><th class="center">Qty</th><th class="right">Rate</th><th class="right">Amount</th></tr></thead>
+                <tbody>{items_html}</tbody>
+            </table>
             <div class="total-section">
                 <div class="total-row"><span><strong>Total</strong></span><span><strong>₹{total:.2f}</strong></span></div>
                 <div class="total-row"><span>Amount Paid</span><span>₹{paid:.2f}</span></div>
                 <div class="total-row bold"><span>Balance</span><span>₹{balance:.2f}</span></div>
             </div>
             <div class="status {status_class}">{status_text}</div>
-            <div class="footer"><div class="thank">Thank You!</div><p>Visit Again | Items once sold cannot be returned</p><p>This is a system generated receipt</p></div>
+            <div class="footer">
+                <div class="thank">Thank You!</div>
+                <p>Visit Again | Items once sold cannot be returned</p>
+                <p>This is a system generated receipt</p>
+            </div>
         </div>
-        <div class="no-print"><button onclick="window.print()">🖨️ Print Receipt</button><button onclick="window.close()">Close</button></div>
+        <div class="no-print">
+            <button onclick="window.print()">🖨️ Print Receipt</button>
+            <button onclick="window.close()">Close</button>
+        </div>
     </body>
     </html>
     """
@@ -505,14 +554,16 @@ def main():
     )
     
     st.sidebar.markdown("---")
-    
-    # Show database info in sidebar
     st.sidebar.info(f"📁 DB Size: {get_db_size()}")
     st.sidebar.info("Made with ❤️ using Streamlit")
     
     # Initialize cart
     if 'cart' not in st.session_state:
         st.session_state.cart = []
+    
+    # Store last invoice for printing
+    if 'last_invoice' not in st.session_state:
+        st.session_state.last_invoice = None
 
     # ==================== DASHBOARD ====================
     if menu == "📊 Dashboard":
@@ -658,16 +709,27 @@ def main():
                         st.rerun()
                 with col6:
                     if st.button("🗑️", key=f"del_pt_{idx}"):
+                        # Check if party has sales
                         sales = get_sales()
                         has_sales = not sales[sales['party'] == row['name']].empty
+                        
                         if has_sales:
-                            st.error(f"❌ Cannot delete {row['name']} - has sales!")
+                            # Show warning with option to force delete
+                            st.warning(f"⚠️ {row['name']} has {len(sales[sales['party'] == row['name']])} sales records!")
+                            if st.button(f"⚠️ Force Delete {row['name']} (WARNING: Deletes all sales!)", key=f"force_del_{idx}"):
+                                if delete_party(row['party_id']):
+                                    st.success(f"✅ {row['name']} and all associated records deleted!")
+                                    st.rerun()
+                                else:
+                                    st.error("❌ Failed to delete party")
                         else:
-                            delete_party(row['party_id'])
-                            st.success(f"✅ {row['name']} deleted!")
-                            st.rerun()
+                            # No sales, safe to delete
+                            if delete_party(row['party_id']):
+                                st.success(f"✅ {row['name']} deleted!")
+                                st.rerun()
                 st.divider()
             
+            # Edit modal
             if 'edit_party_id' in st.session_state:
                 party = parties[parties['party_id'] == st.session_state.edit_party_id].iloc[0]
                 with st.expander(f"✏️ Editing: {party['name']}", expanded=True):
@@ -750,7 +812,6 @@ def main():
                 with col_btn:
                     if st.button("➕ Add to Cart", use_container_width=True):
                         if qty > 0:
-                            # Add to cart in session state
                             st.session_state.cart.append({
                                 'product_id': product_id,
                                 'name': selected,
@@ -780,7 +841,7 @@ def main():
         party_names = parties['name'].tolist()
         party = st.selectbox("Select Party", party_names)
         
-        col1, col2 = st.columns(2)
+        col1, col2 = st.columns([2, 1])
         with col1:
             if st.button("💳 Generate Invoice", type="primary", use_container_width=True):
                 if not st.session_state.cart:
@@ -789,6 +850,16 @@ def main():
                     invoice_no, total = create_invoice(party, st.session_state.cart)
                     if invoice_no:
                         st.success(f"✅ Invoice {invoice_no} generated! Total: ₹{total:,.2f}")
+                        
+                        # Store for re-printing
+                        st.session_state.last_invoice = {
+                            'invoice_no': invoice_no,
+                            'party': party,
+                            'cart': st.session_state.cart.copy(),
+                            'total': total,
+                            'paid': 0,
+                            'balance': total
+                        }
                         
                         st.markdown("---")
                         st.subheader("🧾 Invoice Receipt")
@@ -805,6 +876,20 @@ def main():
                         
                         st.session_state.cart = []
                         st.rerun()
+        
+        with col2:
+            if st.session_state.last_invoice:
+                if st.button("🖨️ Re-print Last Invoice", use_container_width=True):
+                    inv = st.session_state.last_invoice
+                    receipt_html = get_invoice_receipt_html(
+                        inv['invoice_no'],
+                        inv['party'],
+                        inv['cart'],
+                        inv['total'],
+                        inv['paid'],
+                        inv['balance']
+                    )
+                    st.components.v1.html(receipt_html, height=700)
 
     # ==================== CASH RECEIPT ====================
     elif menu == "💰 Cash Receipt":
@@ -881,6 +966,79 @@ def main():
                             else:
                                 receipt_no = add_receipt(party, final_invoice, amount, payment_mode, remarks)
                                 st.success(f"✅ Receipt {receipt_no} recorded! Amount: ₹{amount:,.2f}")
+                                
+                                # Show payment receipt
+                                st.markdown("---")
+                                st.subheader("🧾 Payment Receipt")
+                                
+                                # Update invoice data for receipt display
+                                new_balance = balance - amount
+                                total = get_invoice_total(final_invoice)
+                                
+                                payment_html = f"""
+                                <!DOCTYPE html>
+                                <html>
+                                <head>
+                                    <meta charset="UTF-8">
+                                    <title>Payment Receipt {receipt_no}</title>
+                                    <style>
+                                        @media print {{ .no-print {{ display: none; }} body {{ margin: 0; padding: 20px; }} .receipt {{ box-shadow: none; }} }}
+                                        body {{ font-family: 'Courier New', monospace; background: #f5f5f5; display: flex; justify-content: center; padding: 20px; }}
+                                        .receipt {{ background: white; width: 320px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); border-radius: 8px; }}
+                                        .header {{ text-align: center; border-bottom: 2px dashed #333; padding-bottom: 10px; margin-bottom: 10px; }}
+                                        .header h1 {{ margin: 0; font-size: 20px; color: #003366; }}
+                                        .header p {{ margin: 2px 0; font-size: 12px; color: #666; }}
+                                        .details {{ font-size: 12px; margin-bottom: 10px; padding: 5px 0; border-bottom: 1px dotted #ccc; }}
+                                        .details .row {{ display: flex; justify-content: space-between; padding: 2px 0; }}
+                                        .payment-info {{ background: #f0f7ff; padding: 15px; border-radius: 8px; margin: 10px 0; }}
+                                        .payment-info .row {{ display: flex; justify-content: space-between; padding: 4px 0; font-size: 14px; }}
+                                        .payment-info .row.bold {{ font-weight: bold; font-size: 16px; }}
+                                        .total-section {{ margin-top: 10px; padding-top: 10px; border-top: 2px dashed #333; }}
+                                        .total-row {{ display: flex; justify-content: space-between; font-size: 14px; padding: 3px 0; }}
+                                        .total-row.bold {{ font-weight: bold; font-size: 16px; }}
+                                        .footer {{ text-align: center; font-size: 11px; color: #666; margin-top: 15px; padding-top: 10px; border-top: 2px dashed #333; }}
+                                        .footer .thank {{ font-size: 14px; font-weight: bold; color: #003366; }}
+                                        .status {{ text-align: center; margin: 10px 0; padding: 5px; border-radius: 4px; font-weight: bold; background: #e8f5e9; color: #2e7d32; }}
+                                        .no-print {{ text-align: center; margin-top: 20px; }}
+                                        .no-print button {{ padding: 10px 30px; font-size: 16px; background: #003366; color: white; border: none; border-radius: 5px; cursor: pointer; margin: 0 5px; }}
+                                        .no-print button:hover {{ background: #004488; }}
+                                        .remarks {{ font-size: 11px; color: #666; margin-top: 5px; padding: 5px; background: #f9f9f9; border-radius: 4px; }}
+                                    </style>
+                                </head>
+                                <body>
+                                    <div class="receipt">
+                                        <div class="header">
+                                            <h1>🧺 DETERGENT MART</h1>
+                                            <p>123 Main Street, City</p>
+                                            <p>Phone: +91 98765 43210</p>
+                                        </div>
+                                        <div class="details">
+                                            <div class="row"><span><strong>Payment Receipt</strong></span><span><strong>#{receipt_no}</strong></span></div>
+                                            <div class="row"><span><strong>Date:</strong> {datetime.now().strftime('%d-%m-%Y %H:%M')}</span></div>
+                                        </div>
+                                        <div class="payment-info">
+                                            <div class="row"><span>Party:</span><span><strong>{party}</strong></span></div>
+                                            <div class="row"><span>Invoice No:</span><span><strong>{final_invoice}</strong></span></div>
+                                            <div class="row bold"><span>Amount Received:</span><span><strong>₹{amount:.2f}</strong></span></div>
+                                            <div class="row"><span>Payment Mode:</span><span><strong>{payment_mode}</strong></span></div>
+                                        </div>
+                                        <div class="total-section">
+                                            <div class="total-row"><span>Invoice Total</span><span>₹{total:.2f}</span></div>
+                                            <div class="total-row"><span>Total Paid</span><span>₹{total - new_balance:.2f}</span></div>
+                                            <div class="total-row bold"><span>Balance Due</span><span>₹{new_balance:.2f}</span></div>
+                                        </div>
+                                        <div class="status">{'✅ PAID IN FULL' if new_balance <= 0 else f'⚠️ BALANCE DUE: ₹{new_balance:.2f}'}</div>
+                                        {f'<div class="remarks"><strong>Remarks:</strong> {remarks}</div>' if remarks else ''}
+                                        <div class="footer"><div class="thank">Thank You for Your Payment!</div><p>This is a system generated payment receipt</p></div>
+                                    </div>
+                                    <div class="no-print">
+                                        <button onclick="window.print()">🖨️ Print Receipt</button>
+                                        <button onclick="window.close()">Close</button>
+                                    </div>
+                                </body>
+                                </html>
+                                """
+                                st.components.v1.html(payment_html, height=600)
                                 st.balloons()
                                 st.rerun()
 
