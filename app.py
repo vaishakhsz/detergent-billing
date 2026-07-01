@@ -1,6 +1,6 @@
 """
 Detergent Billing System - Complete Working Version
-With Full Database Viewer
+With Full Database Viewer, Export, Backup, and all features
 """
 
 import streamlit as st
@@ -147,6 +147,20 @@ def get_table_columns(table_name):
     columns = [col[1] for col in c.fetchall()]
     conn.close()
     return columns
+
+def export_to_excel():
+    """Export all tables to Excel"""
+    tables = get_all_tables()
+    filename = f"export_all_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    
+    with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+        for table in tables:
+            df = get_table_data(table)
+            if not df.empty:
+                df.to_excel(writer, sheet_name=table[:31], index=False)
+            else:
+                pd.DataFrame().to_excel(writer, sheet_name=table[:31], index=False)
+    return filename
 
 # ==================== PRODUCT FUNCTIONS ====================
 
@@ -993,7 +1007,6 @@ def main():
     elif menu == "🗄️ Database":
         st.header("🗄️ Database Management")
         
-        # Get all tables
         tables = get_all_tables()
         
         # Overview
@@ -1008,159 +1021,7 @@ def main():
         with col3:
             st.metric("💾 Database Size", get_db_size())
         with col4:
-            st.metric("📁 Tables", ", ".join(tables) if tables else "None")
-        
-        st.markdown("---")
-        
-        # View Tables
-        st.subheader("🔍 View Table Data")
-        
-        if tables:
-            selected_table = st.selectbox("Select Table to View", tables)
-            
-            if selected_table:
-                df = get_table_data(selected_table)
-                columns = get_table_columns(selected_table)
-                
-                st.write(f"**Table: {selected_table}**")
-                st.write(f"📊 {len(df)} records | 📋 Columns: {', '.join(columns)}")
-                
-                if not df.empty:
-                    st.dataframe(df, use_container_width=True)
-                    
-                    # Download CSV
-                    csv = df.to_csv(index=False)
-                    st.download_button(
-                        label=f"📥 Download {selected_table}.csv",
-                        data=csv,
-                        file_name=f"{selected_table}_{datetime.now().strftime('%Y%m%d')}.csv",
-                        mime="text/csv"
-                    )
-                else:
-                    st.info(f"Table '{selected_table}' is empty")
-        else:
-            st.info("No tables found in database")
-        
-        st.markdown("---")
-        
-        # Backup
-        st.subheader("💾 Backup Database")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("📀 Create Backup", type="primary"):
-                backup_file = create_backup()
-                st.success(f"✅ Backup created: {backup_file}")
-                
-                with open(backup_file, 'rb') as f:
-                    st.download_button(
-                        label="📥 Download Backup",
-                        data=f,
-                        file_name=backup_file,
-                        mime="application/octet-stream"
-                    )
-        
-        with col2:
-            st.info("""
-            💡 **Backup Location**
-            Backups are saved in your project folder.
-            File format: `backup_YYYYMMDD_HHMMSS.db`
-            """)
-        
-        st.markdown("---")
-        
-        # Export All
-        st.subheader("📤 Export All Data")
-        
-        if tables:
-            if st.button("📦 Export All Tables to Excel"):
-                try:
-                    with pd.ExcelWriter(f'export_all_data_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx', engine='openpyxl') as writer:
-                        for table in tables:
-                            df = get_table_data(table)
-                            if not df.empty:
-                                df.to_excel(writer, sheet_name=table[:31], index=False)
-                            else:
-                                pd.DataFrame().to_excel(writer, sheet_name=table[:31], index=False)
-                    
-                    st.success("✅ Export created!")
-                    
-                    # Find the latest export file
-                    export_files = [f for f in os.listdir() if f.startswith('export_all_data_') and f.endswith('.xlsx')]
-                    if export_files:
-                        latest = max(export_files)
-                        with open(latest, 'rb') as f:
-                            st.download_button(
-                                label="📥 Download All Data (Excel)",
-                                data=f,
-                                file_name=latest,
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                            )
-                except Exception as e:
-                    st.error(f"Error creating export: {str(e)}")
-        else:
-            st.info("No tables to export")
-
-# ==================== EXPORT FUNCTIONS ====================
-
-def export_to_excel():
-    """Export all tables to Excel"""
-    tables = get_all_tables()
-    filename = f"export_all_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-    
-    with pd.ExcelWriter(filename, engine='openpyxl') as writer:
-        for table in tables:
-            df = get_table_data(table)
-            if not df.empty:
-                df.to_excel(writer, sheet_name=table[:31], index=False)
-            else:
-                pd.DataFrame().to_excel(writer, sheet_name=table[:31], index=False)
-    return filename
-
-def export_table_to_csv(table_name):
-    """Export a single table to CSV"""
-    df = get_table_data(table_name)
-    return df.to_csv(index=False)
-
-def export_sales_report(start_date, end_date):
-    """Export sales report for date range"""
-    sales = get_sales()
-    if not sales.empty:
-        sales['date_only'] = sales['date'].str[:10]
-        filtered = sales[(sales['date_only'] >= start_date) & (sales['date_only'] <= end_date)]
-        return filtered.to_csv(index=False)
-    return None
-
-def export_outstanding_report():
-    """Export outstanding report"""
-    sales = get_sales()
-    if not sales.empty:
-        outstanding = sales[sales['status'] != 'Paid']
-        return outstanding.to_csv(index=False)
-    return None
-
-# ==================== COMPLETE MAIN APP ====================
-
-def main():
-    # ... existing code ...
-    
-    # ==================== DATABASE VIEWER ====================
-    elif menu == "🗄️ Database":
-        st.header("🗄️ Database Management")
-        
-        tables = get_all_tables()
-        
-        # Overview
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("📋 Tables", len(tables))
-        with col2:
-            total_rows = sum(get_row_count(t) for t in tables)
-            st.metric("📝 Records", total_rows)
-        with col3:
-            st.metric("💾 Size", get_db_size())
-        with col4:
-            st.metric("📁 Last Export", "Ready")
+            st.metric("📁 Tables", ", ".join(tables[:3]) + ("..." if len(tables) > 3 else "") if tables else "None")
         
         st.markdown("---")
         
@@ -1190,20 +1051,21 @@ def main():
         with col2:
             st.markdown("### 📄 Export Individual Table")
             st.write("Download a single table as CSV")
-            selected_table = st.selectbox("Select Table", tables)
-            
-            if selected_table:
-                df = get_table_data(selected_table)
-                if not df.empty:
-                    csv = df.to_csv(index=False)
-                    st.download_button(
-                        label=f"📥 Download {selected_table}.csv",
-                        data=csv,
-                        file_name=f"{selected_table}_{datetime.now().strftime('%Y%m%d')}.csv",
-                        mime="text/csv"
-                    )
-                else:
-                    st.info(f"Table '{selected_table}' is empty")
+            if tables:
+                selected_table = st.selectbox("Select Table", tables)
+                
+                if selected_table:
+                    df = get_table_data(selected_table)
+                    if not df.empty:
+                        csv = df.to_csv(index=False)
+                        st.download_button(
+                            label=f"📥 Download {selected_table}.csv",
+                            data=csv,
+                            file_name=f"{selected_table}_{datetime.now().strftime('%Y%m%d')}.csv",
+                            mime="text/csv"
+                        )
+                    else:
+                        st.info(f"Table '{selected_table}' is empty")
         
         st.markdown("---")
         
@@ -1224,6 +1086,8 @@ def main():
                     st.dataframe(df, use_container_width=True)
                 else:
                     st.info(f"Table '{selected_table}' is empty")
+        else:
+            st.info("No tables found in database")
         
         st.markdown("---")
         
@@ -1253,12 +1117,12 @@ def main():
         
         st.markdown("---")
         
-        # ==================== EXPORT SPECIFIC REPORTS ====================
+        # ==================== EXPORT REPORTS ====================
         st.subheader("📊 Export Reports")
         
         report_type = st.selectbox(
             "Select Report Type",
-            ["Sales Report (Date Range)", "Outstanding Report", "Party Report"]
+            ["Sales Report (Date Range)", "Outstanding Report"]
         )
         
         if report_type == "Sales Report (Date Range)":
@@ -1282,8 +1146,6 @@ def main():
                             file_name=f"Sales_Report_{start_date}_to_{end_date}.csv",
                             mime="text/csv"
                         )
-                        
-                        # Also show preview
                         st.dataframe(filtered, use_container_width=True)
                     else:
                         st.info("No sales in this period")
@@ -1304,25 +1166,6 @@ def main():
                         st.dataframe(outstanding, use_container_width=True)
                     else:
                         st.success("✅ No outstanding dues!")
-        
-        elif report_type == "Party Report":
-            parties = get_parties()
-            if not parties.empty:
-                selected_party = st.selectbox("Select Party", parties['name'].tolist())
-                if selected_party and st.button("📊 Generate Party Report"):
-                    sales = get_sales()
-                    party_sales = sales[sales['party'] == selected_party] if not sales.empty else pd.DataFrame()
-                    if not party_sales.empty:
-                        csv = party_sales.to_csv(index=False)
-                        st.download_button(
-                            label=f"📥 Download {selected_party} Report (CSV)",
-                            data=csv,
-                            file_name=f"{selected_party}_Report_{datetime.now().strftime('%Y%m%d')}.csv",
-                            mime="text/csv"
-                        )
-                        st.dataframe(party_sales, use_container_width=True)
-                    else:
-                        st.info(f"No transactions for {selected_party}")
 
 # ==================== RUN ====================
 
