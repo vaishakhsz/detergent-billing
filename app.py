@@ -1343,3 +1343,85 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# ==================== DATABASE VIEWER ====================
+elif menu == "🗄️ Database":
+    st.header("🗄️ Database Management")
+    
+    st.subheader("📊 Database Overview")
+    
+    col1, col2, col3 = st.columns(3)
+    tables = get_all_tables()
+    
+    with col1:
+        st.metric("📋 Total Tables", len(tables))
+    with col2:
+        total_rows = sum(get_row_count(t) for t in tables)
+        st.metric("📝 Total Records", total_rows)
+    with col3:
+        st.metric("💾 Database Size", get_db_size())
+    
+    st.markdown("---")
+    
+    # View Tables
+    st.subheader("🔍 View Table Data")
+    selected_table = st.selectbox("Select Table", tables)
+    
+    if selected_table:
+        df = get_table_data(selected_table)
+        st.write(f"**Table: {selected_table}** ({len(df)} records)")
+        st.dataframe(df, use_container_width=True)
+        
+        csv = df.to_csv(index=False)
+        st.download_button(
+            label=f"📥 Download {selected_table}.csv",
+            data=csv,
+            file_name=f"{selected_table}.csv",
+            mime="text/csv"
+        )
+    
+    st.markdown("---")
+    
+    # Backup
+    st.subheader("💾 Backup Database")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("📀 Create Backup", type="primary"):
+            backup_file = create_backup()
+            st.success(f"✅ Backup created: {backup_file}")
+            
+            with open(backup_file, 'rb') as f:
+                st.download_button(
+                    label="📥 Download Backup",
+                    data=f,
+                    file_name=backup_file,
+                    mime="application/octet-stream"
+                )
+    
+    with col2:
+        st.info("""
+        💡 **Backup Location**
+        Backups are saved in your project folder.
+        File format: `backup_YYYYMMDD_HHMMSS.db`
+        """)
+    
+    st.markdown("---")
+    
+    # Export All
+    st.subheader("📤 Export All Data")
+    
+    if st.button("📦 Export All Tables to Excel"):
+        with pd.ExcelWriter('export_all_data.xlsx', engine='openpyxl') as writer:
+            for table in tables:
+                df = get_table_data(table)
+                df.to_excel(writer, sheet_name=table, index=False)
+        
+        with open('export_all_data.xlsx', 'rb') as f:
+            st.download_button(
+                label="📥 Download All Data (Excel)",
+                data=f,
+                file_name=f"export_all_data_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
