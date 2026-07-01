@@ -1,6 +1,6 @@
 """
-Detergent Billing System - Complete Working Version
-All features: Products, Parties, Billing, Receipts, Ledger, Reports
+Detergent Billing System - Fully Working
+Fixed: Cart persistence, Invoice printing
 """
 
 import streamlit as st
@@ -8,6 +8,7 @@ import pandas as pd
 import sqlite3
 from datetime import datetime, timedelta
 import os
+import base64
 
 # ==================== PAGE CONFIG ====================
 st.set_page_config(
@@ -310,6 +311,235 @@ def init_data():
         for p in defaults:
             add_product(*p)
 
+# ==================== RECEIPT HTML ====================
+
+def get_receipt_html(invoice_no, party, cart, total, paid, balance):
+    """Generate printable receipt HTML"""
+    
+    items_html = ""
+    for item in cart:
+        items_html += f"""
+        <tr>
+            <td>{item['name']}</td>
+            <td style="text-align:center">{item['qty']:.0f}</td>
+            <td style="text-align:right">₹{item['rate']:.2f}</td>
+            <td style="text-align:right">₹{item['amount']:.2f}</td>
+        </tr>
+        """
+    
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>Receipt {invoice_no}</title>
+        <style>
+            @media print {{
+                .no-print {{ display: none; }}
+                body {{ margin: 0; padding: 20px; }}
+                .receipt {{ box-shadow: none; }}
+            }}
+            body {{
+                font-family: 'Courier New', monospace;
+                background: #f5f5f5;
+                display: flex;
+                justify-content: center;
+                padding: 20px;
+            }}
+            .receipt {{
+                background: white;
+                width: 320px;
+                padding: 20px;
+                box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+                border-radius: 8px;
+            }}
+            .header {{
+                text-align: center;
+                border-bottom: 2px dashed #333;
+                padding-bottom: 10px;
+                margin-bottom: 10px;
+            }}
+            .header h1 {{
+                margin: 0;
+                font-size: 20px;
+                color: #003366;
+            }}
+            .header p {{
+                margin: 2px 0;
+                font-size: 12px;
+                color: #666;
+            }}
+            .details {{
+                font-size: 12px;
+                margin-bottom: 10px;
+                padding: 5px 0;
+                border-bottom: 1px dotted #ccc;
+            }}
+            .details .row {{
+                display: flex;
+                justify-content: space-between;
+                padding: 2px 0;
+            }}
+            table {{
+                width: 100%;
+                font-size: 12px;
+                border-collapse: collapse;
+                margin: 10px 0;
+            }}
+            th {{
+                text-align: left;
+                border-bottom: 1px solid #333;
+                padding: 5px 2px;
+                font-size: 11px;
+            }}
+            td {{
+                padding: 4px 2px;
+                border-bottom: 1px dotted #ddd;
+            }}
+            .right {{
+                text-align: right;
+            }}
+            .center {{
+                text-align: center;
+            }}
+            .total-section {{
+                margin-top: 10px;
+                padding-top: 10px;
+                border-top: 2px dashed #333;
+            }}
+            .total-row {{
+                display: flex;
+                justify-content: space-between;
+                font-size: 14px;
+                padding: 3px 0;
+            }}
+            .total-row.bold {{
+                font-weight: bold;
+                font-size: 16px;
+            }}
+            .footer {{
+                text-align: center;
+                font-size: 11px;
+                color: #666;
+                margin-top: 15px;
+                padding-top: 10px;
+                border-top: 2px dashed #333;
+            }}
+            .footer .thank {{
+                font-size: 14px;
+                font-weight: bold;
+                color: #003366;
+            }}
+            .status {{
+                text-align: center;
+                margin: 10px 0;
+                padding: 5px;
+                border-radius: 4px;
+                font-weight: bold;
+            }}
+            .status.unpaid {{
+                background: #ffebee;
+                color: #c62828;
+            }}
+            .status.paid {{
+                background: #e8f5e9;
+                color: #2e7d32;
+            }}
+            .status.partial {{
+                background: #fff3e0;
+                color: #e65100;
+            }}
+            .no-print {{
+                text-align: center;
+                margin-top: 20px;
+            }}
+            .no-print button {{
+                padding: 10px 30px;
+                font-size: 16px;
+                background: #003366;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                cursor: pointer;
+                margin: 0 5px;
+            }}
+            .no-print button:hover {{
+                background: #004488;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="receipt" id="receipt">
+            <div class="header">
+                <h1>🧺 DETERGENT MART</h1>
+                <p>123 Main Street, City</p>
+                <p>Phone: +91 98765 43210</p>
+            </div>
+            
+            <div class="details">
+                <div class="row">
+                    <span><strong>Invoice:</strong> {invoice_no}</span>
+                    <span><strong>Date:</strong> {datetime.now().strftime('%d-%m-%Y %H:%M')}</span>
+                </div>
+                <div class="row">
+                    <span><strong>Party:</strong> {party}</span>
+                </div>
+            </div>
+            
+            <table>
+                <thead>
+                    <tr>
+                        <th>Item</th>
+                        <th class="center">Qty</th>
+                        <th class="right">Rate</th>
+                        <th class="right">Amount</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {items_html}
+                </tbody>
+            </table>
+            
+            <div class="total-section">
+                <div class="total-row">
+                    <span><strong>Total</strong></span>
+                    <span><strong>₹{total:.2f}</strong></span>
+                </div>
+                <div class="total-row">
+                    <span>Amount Paid</span>
+                    <span>₹{paid:.2f}</span>
+                </div>
+                <div class="total-row bold">
+                    <span>Balance</span>
+                    <span>₹{balance:.2f}</span>
+                </div>
+            </div>
+            
+            <div class="status {'paid' if balance <= 0 else 'partial' if paid > 0 else 'unpaid'}">
+                {'✅ PAID' if balance <= 0 else '⚠️ PARTIALLY PAID' if paid > 0 else '❌ UNPAID'}
+            </div>
+            
+            <div class="footer">
+                <div class="thank">Thank You!</div>
+                <p>Visit Again | Items once sold cannot be returned</p>
+                <p>This is a system generated receipt</p>
+            </div>
+        </div>
+        
+        <div class="no-print">
+            <button onclick="window.print()">🖨️ Print Receipt</button>
+            <button onclick="window.close()">Close</button>
+        </div>
+        
+        <script>
+            // Auto-print when page loads (optional - uncomment to auto-print)
+            // window.onload = function() {{ window.print(); }};
+        </script>
+    </body>
+    </html>
+    """
+    return html
+
 # ==================== MAIN APP ====================
 
 def main():
@@ -333,9 +563,13 @@ def main():
     st.sidebar.markdown("---")
     st.sidebar.info("Made with ❤️ using Streamlit")
     
-    # Initialize cart
+    # Initialize cart in session state
     if 'cart' not in st.session_state:
         st.session_state.cart = []
+    
+    # Track if cart was just cleared
+    if 'cart_cleared' not in st.session_state:
+        st.session_state.cart_cleared = False
 
     # ==================== DASHBOARD ====================
     if menu == "📊 Dashboard":
@@ -367,7 +601,6 @@ def main():
         st.subheader("📋 All Products")
         
         if not products.empty:
-            # Display products
             for idx, row in products.iterrows():
                 col1, col2, col3, col4, col5, col6, col7 = st.columns([2, 1.2, 1, 1, 0.8, 0.8, 0.8])
                 with col1:
@@ -571,7 +804,7 @@ def main():
                 
                 col_qty, col_btn = st.columns([2, 1])
                 with col_qty:
-                    qty = st.number_input("Quantity", min_value=1.0, max_value=stock, step=1.0)
+                    qty = st.number_input("Quantity", min_value=1.0, max_value=stock, step=1.0, key="qty_input")
                 with col_btn:
                     if st.button("➕ Add to Cart", use_container_width=True):
                         if qty > 0:
@@ -613,37 +846,47 @@ def main():
                     invoice_no, total = create_invoice(party, st.session_state.cart)
                     st.success(f"✅ Invoice {invoice_no} generated! Total: ₹{total:,.2f}")
                     
+                    # Store invoice data for printing
+                    st.session_state.last_invoice = {
+                        'invoice_no': invoice_no,
+                        'party': party,
+                        'cart': st.session_state.cart.copy(),
+                        'total': total,
+                        'paid': 0,
+                        'balance': total
+                    }
+                    
                     # Show receipt
                     st.markdown("---")
                     st.subheader("🧾 Receipt")
-                    receipt = f"""
-╔══════════════════════════════════════╗
-║         🧺 DETERGENT MART           ║
-║        123 Main Street, City        ║
-║        Phone: +91 98765 43210       ║
-╠══════════════════════════════════════╣
-║ Invoice: {invoice_no}                    ║
-║ Date: {datetime.now().strftime("%d-%m-%Y %H:%M")}    ║
-║ Party: {party}                        ║
-╠══════════════════════════════════════╣
-"""
-                    for item in st.session_state.cart:
-                        receipt += f"║ {item['name']:<20} x{item['qty']:<3} ₹{item['amount']:>8,.2f} ║\n"
-                    receipt += f"""
-╠══════════════════════════════════════╣
-║ {'Total':<20} {'':<8} ₹{total:>8,.2f} ║
-║ {'Status':<20} {'':<8} {'Unpaid':>8} ║
-╚══════════════════════════════════════╝
-║         Thank You! Visit Again       ║
-╚══════════════════════════════════════╝
-"""
-                    st.code(receipt)
+                    
+                    receipt_html = get_receipt_html(
+                        invoice_no, 
+                        party, 
+                        st.session_state.cart, 
+                        total, 
+                        0, 
+                        total
+                    )
+                    st.components.v1.html(receipt_html, height=700)
                     
                     st.session_state.cart = []
                     st.rerun()
+        
         with col2:
-            if st.button("🖨️ Print Receipt", use_container_width=True):
-                st.info("Click the print icon in your browser or press Ctrl+P")
+            # Print last invoice if exists
+            if 'last_invoice' in st.session_state:
+                if st.button("🖨️ Print Last Invoice", use_container_width=True):
+                    inv = st.session_state.last_invoice
+                    receipt_html = get_receipt_html(
+                        inv['invoice_no'],
+                        inv['party'],
+                        inv['cart'],
+                        inv['total'],
+                        inv['paid'],
+                        inv['balance']
+                    )
+                    st.components.v1.html(receipt_html, height=700)
 
     # ==================== CASH RECEIPT ====================
     elif menu == "💰 Cash Receipt":
