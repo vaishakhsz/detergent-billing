@@ -1,16 +1,14 @@
 """
 Detergent Billing System
-PRIMARY: SQLite (local database)
-BACKUP: Google Sheets (optional sync)
-NO RATE LIMIT ISSUES
+With Full CRUD: Create, Read, Update, Delete for Parties & Products
 """
 
 import streamlit as st
 import pandas as pd
 import sqlite3
 from datetime import datetime, timedelta
-import json
-import time
+import shutil
+import os
 
 # ==================== PAGE CONFIG ====================
 st.set_page_config(
@@ -90,15 +88,14 @@ def get_db_connection():
 
 # ==================== DATABASE FUNCTIONS ====================
 
+# ---------- PRODUCTS ----------
 def get_products():
-    """Get all products from local DB"""
     conn = get_db_connection()
-    df = pd.read_sql_query("SELECT product_id, name, rate, stock, brand, unit FROM products ORDER BY name", conn)
+    df = pd.read_sql_query("SELECT id, product_id, name, rate, stock, brand, unit FROM products ORDER BY name", conn)
     conn.close()
     return df
 
 def add_product(product_id, name, rate, stock, brand='', unit='Pcs'):
-    """Add product to local DB"""
     conn = get_db_connection()
     c = conn.cursor()
     c.execute("INSERT INTO products (product_id, name, rate, stock, brand, unit) VALUES (?, ?, ?, ?, ?, ?)",
@@ -106,23 +103,36 @@ def add_product(product_id, name, rate, stock, brand='', unit='Pcs'):
     conn.commit()
     conn.close()
 
+def update_product(product_id, name, rate, stock, brand, unit):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("UPDATE products SET name=?, rate=?, stock=?, brand=?, unit=? WHERE product_id=?",
+              (name, rate, stock, brand, unit, product_id))
+    conn.commit()
+    conn.close()
+
+def delete_product(product_id):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("DELETE FROM products WHERE product_id=?", (product_id,))
+    conn.commit()
+    conn.close()
+
 def update_product_stock(name, change):
-    """Update product stock"""
     conn = get_db_connection()
     c = conn.cursor()
     c.execute("UPDATE products SET stock = stock + ? WHERE name = ?", (change, name))
     conn.commit()
     conn.close()
 
+# ---------- PARTIES ----------
 def get_parties():
-    """Get all parties from local DB"""
     conn = get_db_connection()
-    df = pd.read_sql_query("SELECT party_id, name, mobile, whatsapp, address, opening_balance, gst_no FROM parties ORDER BY name", conn)
+    df = pd.read_sql_query("SELECT id, party_id, name, mobile, whatsapp, address, opening_balance, gst_no FROM parties ORDER BY name", conn)
     conn.close()
     return df
 
 def add_party(party_id, name, mobile, whatsapp, address, opening_balance, gst_no):
-    """Add party to local DB"""
     conn = get_db_connection()
     c = conn.cursor()
     c.execute("INSERT INTO parties (party_id, name, mobile, whatsapp, address, opening_balance, gst_no) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -130,15 +140,29 @@ def add_party(party_id, name, mobile, whatsapp, address, opening_balance, gst_no
     conn.commit()
     conn.close()
 
+def update_party(party_id, name, mobile, whatsapp, address, opening_balance, gst_no):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("UPDATE parties SET name=?, mobile=?, whatsapp=?, address=?, opening_balance=?, gst_no=? WHERE party_id=?",
+              (name, mobile, whatsapp, address, opening_balance, gst_no, party_id))
+    conn.commit()
+    conn.close()
+
+def delete_party(party_id):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("DELETE FROM parties WHERE party_id=?", (party_id,))
+    conn.commit()
+    conn.close()
+
+# ---------- SALES ----------
 def get_sales():
-    """Get all sales from local DB"""
     conn = get_db_connection()
     df = pd.read_sql_query("SELECT invoice_no, date, party, total, status FROM sales ORDER BY date DESC", conn)
     conn.close()
     return df
 
 def add_sale(invoice_no, date, party, total, status='Unpaid'):
-    """Add sale to local DB"""
     conn = get_db_connection()
     c = conn.cursor()
     c.execute("INSERT INTO sales (invoice_no, date, party, total, status) VALUES (?, ?, ?, ?, ?)",
@@ -147,7 +171,6 @@ def add_sale(invoice_no, date, party, total, status='Unpaid'):
     conn.close()
 
 def add_sale_item(invoice_no, product_id, product_name, qty, rate, amount):
-    """Add sale item to local DB"""
     conn = get_db_connection()
     c = conn.cursor()
     c.execute("INSERT INTO sales_items (invoice_no, product_id, product_name, qty, rate, amount) VALUES (?, ?, ?, ?, ?, ?)",
@@ -156,22 +179,20 @@ def add_sale_item(invoice_no, product_id, product_name, qty, rate, amount):
     conn.close()
 
 def get_sale_items(invoice_no):
-    """Get items for an invoice"""
     conn = get_db_connection()
     df = pd.read_sql_query("SELECT product_id, product_name, qty, rate, amount FROM sales_items WHERE invoice_no = ?", 
                           conn, params=(invoice_no,))
     conn.close()
     return df
 
+# ---------- RECEIPTS ----------
 def get_receipts():
-    """Get all receipts from local DB"""
     conn = get_db_connection()
     df = pd.read_sql_query("SELECT receipt_no, date, party, invoice_no, amount, payment_mode, remarks FROM receipts ORDER BY date DESC", conn)
     conn.close()
     return df
 
 def add_receipt(receipt_no, date, party, invoice_no, amount, payment_mode, remarks=''):
-    """Add receipt to local DB"""
     conn = get_db_connection()
     c = conn.cursor()
     c.execute("INSERT INTO receipts (receipt_no, date, party, invoice_no, amount, payment_mode, remarks) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -179,8 +200,8 @@ def add_receipt(receipt_no, date, party, invoice_no, amount, payment_mode, remar
     conn.commit()
     conn.close()
 
+# ---------- ID GENERATORS ----------
 def get_next_invoice_no():
-    """Generate next invoice number"""
     conn = get_db_connection()
     c = conn.cursor()
     c.execute("SELECT MAX(invoice_no) FROM sales")
@@ -192,7 +213,6 @@ def get_next_invoice_no():
     return "INV0001"
 
 def get_next_receipt_no():
-    """Generate next receipt number"""
     conn = get_db_connection()
     c = conn.cursor()
     c.execute("SELECT MAX(receipt_no) FROM receipts")
@@ -203,8 +223,18 @@ def get_next_receipt_no():
         return f"REC{num:04d}"
     return "REC0001"
 
+def get_next_product_id():
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT MAX(product_id) FROM products")
+    result = c.fetchone()[0]
+    conn.close()
+    if result:
+        num = int(result.replace('P', '')) + 1
+        return f"P{num:03d}"
+    return "P001"
+
 def get_next_party_id():
-    """Generate next party ID"""
     conn = get_db_connection()
     c = conn.cursor()
     c.execute("SELECT MAX(party_id) FROM parties")
@@ -212,9 +242,10 @@ def get_next_party_id():
     conn.close()
     if result:
         num = int(result.replace('PT', '')) + 1
-        return f"PT{num:04d}"
-    return "PT0001"
+        return f"PT{num:03d}"
+    return "PT001"
 
+# ---------- HELPERS ----------
 def safe_float(value):
     try:
         if value is None or value == '':
@@ -235,7 +266,6 @@ def safe_int(value):
 
 def init_data():
     """Initialize with default data if empty"""
-    # Initialize products if empty
     products = get_products()
     if products.empty:
         defaults = [
@@ -260,7 +290,6 @@ def main():
     st.sidebar.title("📋 Menu")
     st.sidebar.markdown("---")
     st.sidebar.success("✅ Local Database Active")
-    st.sidebar.info("📊 Data stored locally - No rate limits!")
     
     # Menu
     menu = st.sidebar.radio(
@@ -301,83 +330,177 @@ def main():
         else:
             st.info("No sales yet")
 
-    # ==================== PRODUCTS ====================
+    # ==================== PRODUCTS (WITH CRUD) ====================
     elif menu == "📦 Products":
         st.header("📦 Product Master")
         
         products = get_products()
         
-        tab1, tab2 = st.tabs(["Manage Products", "Add Product"])
+        # --- View Products ---
+        st.subheader("📋 All Products")
         
-        with tab1:
-            if not products.empty:
-                st.dataframe(products, use_container_width=True)
-                
-                st.subheader("Quick Stock Update")
-                col1, col2 = st.columns([2, 1])
+        if not products.empty:
+            # Display products with actions
+            for idx, row in products.iterrows():
+                col1, col2, col3, col4, col5, col6 = st.columns([2, 1.5, 1, 1, 0.8, 0.8])
                 with col1:
-                    selected = st.selectbox("Select Product", products['name'].tolist())
+                    st.write(f"**{row['name']}**")
                 with col2:
-                    change = st.number_input("Change (+/-)", value=0, step=1)
-                    if st.button("Update Stock"):
-                        if change != 0:
-                            update_product_stock(selected, change)
-                            st.success(f"✅ Stock updated! {selected}: {change}")
-                            st.rerun()
-            else:
-                st.info("No products available")
-        
-        with tab2:
-            with st.form("add_product"):
-                col1, col2 = st.columns(2)
-                with col1:
-                    name = st.text_input("Product Name *")
-                    rate = st.number_input("Rate (₹) *", min_value=0.0, step=1.0)
-                with col2:
-                    stock = st.number_input("Stock Quantity *", min_value=0, step=1)
-                    brand = st.text_input("Brand")
-                    unit = st.selectbox("Unit", ["Pcs", "Pack", "Kg", "Ltr"])
-                
-                if st.form_submit_button("Add Product"):
-                    if name and rate > 0:
-                        products = get_products()
-                        product_id = f"P{len(products)+1:03d}"
-                        add_product(product_id, name, rate, stock, brand, unit)
-                        st.success(f"✅ Product '{name}' added!")
+                    st.write(f"₹{row['rate']:.2f}")
+                with col3:
+                    st.write(f"{row['stock']:.0f}")
+                with col4:
+                    st.write(row['product_id'])
+                with col5:
+                    if st.button("✏️", key=f"edit_p_{row['product_id']}"):
+                        st.session_state.edit_product = row['product_id']
                         st.rerun()
+                with col6:
+                    if st.button("🗑️", key=f"del_p_{row['product_id']}"):
+                        if st.warning(f"Delete {row['name']}?"):
+                            delete_product(row['product_id'])
+                            st.success(f"✅ {row['name']} deleted!")
+                            st.rerun()
+                st.divider()
+        else:
+            st.info("No products available")
+        
+        # --- Edit Product Modal ---
+        if 'edit_product' in st.session_state:
+            product_id = st.session_state.edit_product
+            product = products[products['product_id'] == product_id].iloc[0]
+            
+            with st.expander(f"✏️ Editing: {product['name']}", expanded=True):
+                with st.form("edit_product_form"):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        name = st.text_input("Product Name", value=product['name'])
+                        rate = st.number_input("Rate (₹)", value=float(product['rate']), step=1.0)
+                    with col2:
+                        stock = st.number_input("Stock", value=float(product['stock']), step=1.0)
+                        brand = st.text_input("Brand", value=product['brand'] if product['brand'] else '')
+                        unit = st.selectbox("Unit", ["Pcs", "Pack", "Kg", "Ltr"], 
+                                          index=["Pcs", "Pack", "Kg", "Ltr"].index(product['unit']) if product['unit'] in ["Pcs", "Pack", "Kg", "Ltr"] else 0)
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.form_submit_button("💾 Save Changes"):
+                            update_product(product_id, name, rate, stock, brand, unit)
+                            st.success(f"✅ Product updated!")
+                            del st.session_state.edit_product
+                            st.rerun()
+                    with col2:
+                        if st.form_submit_button("❌ Cancel"):
+                            del st.session_state.edit_product
+                            st.rerun()
+        
+        # --- Add Product ---
+        st.subheader("➕ Add New Product")
+        with st.form("add_product"):
+            col1, col2 = st.columns(2)
+            with col1:
+                name = st.text_input("Product Name *")
+                rate = st.number_input("Rate (₹) *", min_value=0.0, step=1.0)
+            with col2:
+                stock = st.number_input("Stock Quantity *", min_value=0, step=1)
+                brand = st.text_input("Brand")
+                unit = st.selectbox("Unit", ["Pcs", "Pack", "Kg", "Ltr"])
+            
+            if st.form_submit_button("Add Product"):
+                if name and rate > 0:
+                    product_id = get_next_product_id()
+                    add_product(product_id, name, rate, stock, brand, unit)
+                    st.success(f"✅ Product '{name}' added!")
+                    st.rerun()
 
-    # ==================== PARTIES ====================
+    # ==================== PARTIES (WITH CRUD) ====================
     elif menu == "🏪 Parties":
         st.header("🏪 Party Master")
         
         parties = get_parties()
         
-        tab1, tab2 = st.tabs(["Manage Parties", "Add Party"])
+        # --- View Parties ---
+        st.subheader("📋 All Parties")
         
-        with tab1:
-            if parties.empty:
-                st.info("No parties added yet")
-            else:
-                st.dataframe(parties, use_container_width=True)
-        
-        with tab2:
-            with st.form("add_party_form"):
-                col1, col2 = st.columns(2)
+        if not parties.empty:
+            # Display parties with actions
+            for idx, row in parties.iterrows():
+                col1, col2, col3, col4, col5, col6 = st.columns([2, 1.2, 1, 0.8, 0.8, 0.8])
                 with col1:
-                    name = st.text_input("Party Name *")
-                    mobile = st.text_input("Mobile Number")
-                    whatsapp = st.text_input("WhatsApp Number")
+                    st.write(f"**{row['name']}**")
                 with col2:
-                    address = st.text_area("Address")
-                    opening_balance = st.number_input("Opening Balance (₹)", min_value=0.0, step=100.0, value=0.0)
-                    gst_no = st.text_input("GST No (Optional)")
-                
-                if st.form_submit_button("Add Party"):
-                    if name:
-                        party_id = get_next_party_id()
-                        add_party(party_id, name, mobile, whatsapp, address, opening_balance, gst_no)
-                        st.success(f"✅ Party '{name}' added!")
+                    st.write(row['mobile'] if row['mobile'] else '-')
+                with col3:
+                    st.write(f"₹{row['opening_balance']:.0f}")
+                with col4:
+                    st.write(row['party_id'])
+                with col5:
+                    if st.button("✏️", key=f"edit_pt_{row['party_id']}"):
+                        st.session_state.edit_party = row['party_id']
                         st.rerun()
+                with col6:
+                    if st.button("🗑️", key=f"del_pt_{row['party_id']}"):
+                        # Check if party has transactions
+                        sales = get_sales()
+                        has_sales = not sales[sales['party'] == row['name']].empty
+                        if has_sales:
+                            st.error(f"❌ Cannot delete {row['name']} - has sales records!")
+                        else:
+                            delete_party(row['party_id'])
+                            st.success(f"✅ {row['name']} deleted!")
+                            st.rerun()
+                st.divider()
+        else:
+            st.info("No parties added yet")
+        
+        # --- Edit Party Modal ---
+        if 'edit_party' in st.session_state:
+            party_id = st.session_state.edit_party
+            party = parties[parties['party_id'] == party_id].iloc[0]
+            
+            with st.expander(f"✏️ Editing: {party['name']}", expanded=True):
+                with st.form("edit_party_form"):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        name = st.text_input("Party Name", value=party['name'])
+                        mobile = st.text_input("Mobile Number", value=party['mobile'] if party['mobile'] else '')
+                        whatsapp = st.text_input("WhatsApp Number", value=party['whatsapp'] if party['whatsapp'] else '')
+                    with col2:
+                        address = st.text_area("Address", value=party['address'] if party['address'] else '')
+                        opening_balance = st.number_input("Opening Balance (₹)", value=float(party['opening_balance']), step=100.0)
+                        gst_no = st.text_input("GST No", value=party['gst_no'] if party['gst_no'] else '')
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.form_submit_button("💾 Save Changes"):
+                            update_party(party_id, name, mobile, whatsapp, address, opening_balance, gst_no)
+                            st.success(f"✅ Party updated!")
+                            del st.session_state.edit_party
+                            st.rerun()
+                    with col2:
+                        if st.form_submit_button("❌ Cancel"):
+                            del st.session_state.edit_party
+                            st.rerun()
+        
+        # --- Add Party ---
+        st.subheader("➕ Add New Party")
+        with st.form("add_party_form"):
+            col1, col2 = st.columns(2)
+            with col1:
+                name = st.text_input("Party Name *")
+                mobile = st.text_input("Mobile Number")
+                whatsapp = st.text_input("WhatsApp Number")
+            with col2:
+                address = st.text_area("Address")
+                opening_balance = st.number_input("Opening Balance (₹)", min_value=0.0, step=100.0, value=0.0)
+                gst_no = st.text_input("GST No (Optional)")
+            
+            if st.form_submit_button("Add Party"):
+                if name:
+                    party_id = get_next_party_id()
+                    add_party(party_id, name, mobile, whatsapp, address, opening_balance, gst_no)
+                    st.success(f"✅ Party '{name}' added!")
+                    st.rerun()
 
     # ==================== BILLING ====================
     elif menu == "🧾 Billing":
