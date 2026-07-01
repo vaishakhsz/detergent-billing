@@ -1,6 +1,6 @@
 """
 Detergent Billing System - Complete Working Version
-With Full Database Viewer, Export, Backup, and all features
+Fixed: Excel Export with CSV Fallback
 """
 
 import streamlit as st
@@ -9,6 +9,8 @@ import sqlite3
 from datetime import datetime, timedelta
 import os
 import shutil
+import zipfile
+import io
 
 # ==================== PAGE CONFIG ====================
 st.set_page_config(
@@ -89,7 +91,6 @@ def get_conn():
 # ==================== DATABASE UTILITY FUNCTIONS ====================
 
 def get_all_tables():
-    """Get list of all tables in database"""
     conn = get_conn()
     c = conn.cursor()
     c.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
@@ -98,7 +99,6 @@ def get_all_tables():
     return tables
 
 def get_table_data(table_name):
-    """Get all data from a table"""
     conn = get_conn()
     try:
         df = pd.read_sql_query(f"SELECT * FROM {table_name}", conn)
@@ -108,7 +108,6 @@ def get_table_data(table_name):
     return df
 
 def get_db_size():
-    """Get database file size"""
     try:
         size = os.path.getsize('detergent_billing.db')
         if size < 1024:
@@ -121,7 +120,6 @@ def get_db_size():
         return "0 bytes"
 
 def get_row_count(table_name):
-    """Get number of rows in a table"""
     conn = get_conn()
     c = conn.cursor()
     try:
@@ -133,14 +131,12 @@ def get_row_count(table_name):
     return count
 
 def create_backup():
-    """Create a backup of the database"""
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     backup_name = f"backup_{timestamp}.db"
     shutil.copy2('detergent_billing.db', backup_name)
     return backup_name
 
 def get_table_columns(table_name):
-    """Get column names of a table"""
     conn = get_conn()
     c = conn.cursor()
     c.execute(f"PRAGMA table_info({table_name})")
@@ -149,18 +145,47 @@ def get_table_columns(table_name):
     return columns
 
 def export_to_excel():
-    """Export all tables to Excel"""
+    """Export all tables to Excel (or CSV if openpyxl not available)"""
     tables = get_all_tables()
-    filename = f"export_all_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    filename_base = f"export_all_data_{timestamp}"
     
-    with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+    try:
+        # Try Excel export first
+        import openpyxl
+        filename = f"{filename_base}.xlsx"
+        with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+            for table in tables:
+                df = get_table_data(table)
+                if not df.empty:
+                    df.to_excel(writer, sheet_name=table[:31], index=False)
+                else:
+                    pd.DataFrame().to_excel(writer, sheet_name=table[:31], index=False)
+        return filename, "Excel (.xlsx)"
+    except ImportError:
+        # Fallback to CSV export
+        csv_files = []
         for table in tables:
             df = get_table_data(table)
             if not df.empty:
-                df.to_excel(writer, sheet_name=table[:31], index=False)
+                csv_filename = f"{filename_base}_{table}.csv"
+                df.to_csv(csv_filename, index=False)
+                csv_files.append(csv_filename)
             else:
-                pd.DataFrame().to_excel(writer, sheet_name=table[:31], index=False)
-    return filename
+                csv_filename = f"{filename_base}_{table}.csv"
+                pd.DataFrame().to_csv(csv_filename, index=False)
+                csv_files.append(csv_filename)
+        
+        # Create zip file for multiple CSVs
+        if len(csv_files) > 1:
+            zip_filename = f"{filename_base}.zip"
+            with zipfile.ZipFile(zip_filename, 'w') as zipf:
+                for file in csv_files:
+                    zipf.write(file)
+                    os.remove(file)
+            return zip_filename, "CSV (ZIP)"
+        else:
+            return csv_files[0] if csv_files else None, "CSV"
 
 # ==================== PRODUCT FUNCTIONS ====================
 
@@ -280,6 +305,10 @@ def get_next_invoice_no():
     return "INV0001"
 
 def create_invoice(party, cart):
+    """Create invoice and return invoice_no, total"""
+    if not cart:
+        return None, 0
+    
     conn = get_conn()
     c = conn.cursor()
     
@@ -287,18 +316,22 @@ def create_invoice(party, cart):
     total = sum(item['amount'] for item in cart)
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     
-    c.execute("INSERT INTO sales (invoice_no, date, party, total, status) VALUES (?, ?, ?, ?, ?)",
-              (invoice_no, now, party, total, 'Unpaid'))
-    
-    for item in cart:
-        c.execute("INSERT INTO sales_items (invoice_no, product_id, product_name, qty, rate, amount) VALUES (?, ?, ?, ?, ?, ?)",
-                  (invoice_no, item['product_id'], item['name'], item['qty'], item['rate'], item['amount']))
-        c.execute("UPDATE products SET stock = stock - ? WHERE name = ?", (item['qty'], item['name']))
-    
-    conn.commit()
-    conn.close()
-    
-    return invoice_no, total
+    try:
+        c.execute("INSERT INTO sales (invoice_no, date, party, total, status) VALUES (?, ?, ?, ?, ?)",
+                  (invoice_no, now, party, total, 'Unpaid'))
+        
+        for item in cart:
+            c.execute("INSERT INTO sales_items (invoice_no, product_id, product_name, qty, rate, amount) VALUES (?, ?, ?, ?, ?, ?)",
+                      (invoice_no, item['product_id'], item['name'], item['qty'], item['rate'], item['amount']))
+            c.execute("UPDATE products SET stock = stock - ? WHERE name = ?", (item['qty'], item['name']))
+        
+        conn.commit()
+        conn.close()
+        return invoice_no, total
+    except Exception as e:
+        conn.close()
+        st.error(f"Error creating invoice: {str(e)}")
+        return None, 0
 
 def get_invoice_total(invoice_no):
     conn = get_conn()
@@ -399,34 +432,36 @@ def get_invoice_receipt_html(invoice_no, party, cart, total, paid, balance):
     html = f"""
     <!DOCTYPE html>
     <html>
-    <head><meta charset="UTF-8"><title>Invoice {invoice_no}</title>
-    <style>
-        @media print {{ .no-print {{ display: none; }} body {{ margin: 0; padding: 20px; }} .receipt {{ box-shadow: none; }} }}
-        body {{ font-family: 'Courier New', monospace; background: #f5f5f5; display: flex; justify-content: center; padding: 20px; }}
-        .receipt {{ background: white; width: 320px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); border-radius: 8px; }}
-        .header {{ text-align: center; border-bottom: 2px dashed #333; padding-bottom: 10px; margin-bottom: 10px; }}
-        .header h1 {{ margin: 0; font-size: 20px; color: #003366; }}
-        .header p {{ margin: 2px 0; font-size: 12px; color: #666; }}
-        .details {{ font-size: 12px; margin-bottom: 10px; padding: 5px 0; border-bottom: 1px dotted #ccc; }}
-        .details .row {{ display: flex; justify-content: space-between; padding: 2px 0; }}
-        table {{ width: 100%; font-size: 12px; border-collapse: collapse; margin: 10px 0; }}
-        th {{ text-align: left; border-bottom: 1px solid #333; padding: 5px 2px; font-size: 11px; }}
-        td {{ padding: 4px 2px; border-bottom: 1px dotted #ddd; }}
-        .right {{ text-align: right; }}
-        .center {{ text-align: center; }}
-        .total-section {{ margin-top: 10px; padding-top: 10px; border-top: 2px dashed #333; }}
-        .total-row {{ display: flex; justify-content: space-between; font-size: 14px; padding: 3px 0; }}
-        .total-row.bold {{ font-weight: bold; font-size: 16px; }}
-        .footer {{ text-align: center; font-size: 11px; color: #666; margin-top: 15px; padding-top: 10px; border-top: 2px dashed #333; }}
-        .footer .thank {{ font-size: 14px; font-weight: bold; color: #003366; }}
-        .status {{ text-align: center; margin: 10px 0; padding: 5px; border-radius: 4px; font-weight: bold; }}
-        .status.paid {{ background: #e8f5e9; color: #2e7d32; }}
-        .status.unpaid {{ background: #ffebee; color: #c62828; }}
-        .status.partial {{ background: #fff3e0; color: #e65100; }}
-        .no-print {{ text-align: center; margin-top: 20px; }}
-        .no-print button {{ padding: 10px 30px; font-size: 16px; background: #003366; color: white; border: none; border-radius: 5px; cursor: pointer; margin: 0 5px; }}
-        .no-print button:hover {{ background: #004488; }}
-    </style>
+    <head>
+        <meta charset="UTF-8">
+        <title>Invoice {invoice_no}</title>
+        <style>
+            @media print {{ .no-print {{ display: none; }} body {{ margin: 0; padding: 20px; }} .receipt {{ box-shadow: none; }} }}
+            body {{ font-family: 'Courier New', monospace; background: #f5f5f5; display: flex; justify-content: center; padding: 20px; }}
+            .receipt {{ background: white; width: 320px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); border-radius: 8px; }}
+            .header {{ text-align: center; border-bottom: 2px dashed #333; padding-bottom: 10px; margin-bottom: 10px; }}
+            .header h1 {{ margin: 0; font-size: 20px; color: #003366; }}
+            .header p {{ margin: 2px 0; font-size: 12px; color: #666; }}
+            .details {{ font-size: 12px; margin-bottom: 10px; padding: 5px 0; border-bottom: 1px dotted #ccc; }}
+            .details .row {{ display: flex; justify-content: space-between; padding: 2px 0; }}
+            table {{ width: 100%; font-size: 12px; border-collapse: collapse; margin: 10px 0; }}
+            th {{ text-align: left; border-bottom: 1px solid #333; padding: 5px 2px; font-size: 11px; }}
+            td {{ padding: 4px 2px; border-bottom: 1px dotted #ddd; }}
+            .right {{ text-align: right; }}
+            .center {{ text-align: center; }}
+            .total-section {{ margin-top: 10px; padding-top: 10px; border-top: 2px dashed #333; }}
+            .total-row {{ display: flex; justify-content: space-between; font-size: 14px; padding: 3px 0; }}
+            .total-row.bold {{ font-weight: bold; font-size: 16px; }}
+            .footer {{ text-align: center; font-size: 11px; color: #666; margin-top: 15px; padding-top: 10px; border-top: 2px dashed #333; }}
+            .footer .thank {{ font-size: 14px; font-weight: bold; color: #003366; }}
+            .status {{ text-align: center; margin: 10px 0; padding: 5px; border-radius: 4px; font-weight: bold; }}
+            .status.paid {{ background: #e8f5e9; color: #2e7d32; }}
+            .status.unpaid {{ background: #ffebee; color: #c62828; }}
+            .status.partial {{ background: #fff3e0; color: #e65100; }}
+            .no-print {{ text-align: center; margin-top: 20px; }}
+            .no-print button {{ padding: 10px 30px; font-size: 16px; background: #003366; color: white; border: none; border-radius: 5px; cursor: pointer; margin: 0 5px; }}
+            .no-print button:hover {{ background: #004488; }}
+        </style>
     </head>
     <body>
         <div class="receipt">
@@ -687,11 +722,11 @@ def main():
         parties = get_parties()
         
         if products.empty:
-            st.warning("⚠️ No products!")
+            st.warning("⚠️ No products! Add products first.")
             return
         
         if parties.empty:
-            st.warning("⚠️ No parties!")
+            st.warning("⚠️ No parties! Add parties first.")
             return
         
         col1, col2 = st.columns([2, 1])
@@ -715,6 +750,7 @@ def main():
                 with col_btn:
                     if st.button("➕ Add to Cart", use_container_width=True):
                         if qty > 0:
+                            # Add to cart in session state
                             st.session_state.cart.append({
                                 'product_id': product_id,
                                 'name': selected,
@@ -751,23 +787,24 @@ def main():
                     st.error("❌ Cart is empty!")
                 else:
                     invoice_no, total = create_invoice(party, st.session_state.cart)
-                    st.success(f"✅ Invoice {invoice_no} generated! Total: ₹{total:,.2f}")
-                    
-                    st.markdown("---")
-                    st.subheader("🧾 Invoice Receipt")
-                    
-                    receipt_html = get_invoice_receipt_html(
-                        invoice_no, 
-                        party, 
-                        st.session_state.cart, 
-                        total, 
-                        0, 
-                        total
-                    )
-                    st.components.v1.html(receipt_html, height=700)
-                    
-                    st.session_state.cart = []
-                    st.rerun()
+                    if invoice_no:
+                        st.success(f"✅ Invoice {invoice_no} generated! Total: ₹{total:,.2f}")
+                        
+                        st.markdown("---")
+                        st.subheader("🧾 Invoice Receipt")
+                        
+                        receipt_html = get_invoice_receipt_html(
+                            invoice_no, 
+                            party, 
+                            st.session_state.cart, 
+                            total, 
+                            0, 
+                            total
+                        )
+                        st.components.v1.html(receipt_html, height=700)
+                        
+                        st.session_state.cart = []
+                        st.rerun()
 
     # ==================== CASH RECEIPT ====================
     elif menu == "💰 Cash Receipt":
@@ -1032,19 +1069,22 @@ def main():
         
         with col1:
             st.markdown("### 📦 Export All Data")
-            st.write("Export all tables to a single Excel file")
-            if st.button("📦 Export All to Excel", type="primary"):
+            st.write("Export all tables to Excel (or CSV if openpyxl not available)")
+            if st.button("📦 Export All Data", type="primary"):
                 try:
-                    filename = export_to_excel()
-                    st.success(f"✅ Export created!")
-                    
-                    with open(filename, 'rb') as f:
-                        st.download_button(
-                            label="📥 Download Excel File",
-                            data=f,
-                            file_name=filename,
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                        )
+                    filename, file_type = export_to_excel()
+                    if filename:
+                        st.success(f"✅ Export created! ({file_type})")
+                        
+                        with open(filename, 'rb') as f:
+                            st.download_button(
+                                label=f"📥 Download {file_type}",
+                                data=f,
+                                file_name=filename,
+                                mime="application/octet-stream"
+                            )
+                    else:
+                        st.error("No data to export")
                 except Exception as e:
                     st.error(f"Error: {str(e)}")
         
