@@ -892,7 +892,7 @@ def main():
                     st.components.v1.html(receipt_html, height=700)
 
 
-      ==================== CASH RECEIPT ====================
+    #==================== CASH RECEIPT ====================
     elif menu == "💰 Cash Receipt":
         st.header("💰 Cash Receipt Entry")
         
@@ -1058,9 +1058,9 @@ def main():
                                 # Update invoice status in session
                                 st.rerun()
 
-    # ==================== END CASH RECEIPT ================ #
+    
 
-    # ==================== PARTY LEDGER ==================== #
+    # ==================== PARTY LEDGER ==================== 
     elif menu == "📒 Party Ledger":
         st.header("📒 Party Ledger")
         
