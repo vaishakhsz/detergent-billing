@@ -1060,7 +1060,7 @@ def main():
 
     # ==================== END CASH RECEIPT ================ #
 
-    # ==================== PARTY LEDGER ====================
+    # ==================== PARTY LEDGER ==================== #
     elif menu == "📒 Party Ledger":
         st.header("📒 Party Ledger")
         
