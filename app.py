@@ -891,19 +891,21 @@ def main():
                     )
                     st.components.v1.html(receipt_html, height=700)
 
-    # ==================== CASH RECEIPT ====================
-    elif menu == "💰 Cash Receipt":
+
+     # ==================== CASH RECEIPT ====================
+        elif menu == "💰 Cash Receipt":
         st.header("💰 Cash Receipt Entry")
         
         parties = get_parties()
         sales = get_sales()
+        receipts = get_receipts()
         
         if parties.empty:
-            st.warning("⚠️ No parties!")
+            st.warning("⚠️ No parties! Add parties first.")
             return
         
         if sales.empty:
-            st.warning("⚠️ No invoices!")
+            st.warning("⚠️ No invoices! Add invoices first.")
             return
         
         st.subheader("📝 Record Payment")
@@ -914,6 +916,7 @@ def main():
             with col1:
                 party = st.selectbox("Party *", parties['name'].tolist())
                 
+                # Get unpaid invoices for this party
                 unpaid = sales[sales['status'] != 'Paid'] if not sales.empty else pd.DataFrame()
                 party_invoices = unpaid[unpaid['party'] == party] if party else pd.DataFrame()
                 
@@ -927,7 +930,7 @@ def main():
                         total = float(invoice_data['total'])
                         paid = get_invoice_paid(invoice_no)
                         balance = total - paid
-                        st.info(f"💳 Invoice: {invoice_no} | Balance: ₹{balance:,.2f}")
+                        st.info(f"💳 Invoice: {invoice_no} | Total: ₹{total:,.2f} | Paid: ₹{paid:,.2f} | Balance: ₹{balance:,.2f}")
                 else:
                     st.success(f"✅ No pending invoices for {party}")
                     invoice_no = ""
@@ -967,15 +970,14 @@ def main():
                                 receipt_no = add_receipt(party, final_invoice, amount, payment_mode, remarks)
                                 st.success(f"✅ Receipt {receipt_no} recorded! Amount: ₹{amount:,.2f}")
                                 
-                                # Show payment receipt
+                                # Get updated balance after payment
+                                new_balance = balance - amount
+                                
+                                # Generate and show payment receipt
                                 st.markdown("---")
                                 st.subheader("🧾 Payment Receipt")
                                 
-                                # Update invoice data for receipt display
-                                new_balance = balance - amount
-                                total = get_invoice_total(final_invoice)
-                                
-                                payment_html = f"""
+                                payment_receipt_html = f"""
                                 <!DOCTYPE html>
                                 <html>
                                 <head>
@@ -984,7 +986,7 @@ def main():
                                     <style>
                                         @media print {{ .no-print {{ display: none; }} body {{ margin: 0; padding: 20px; }} .receipt {{ box-shadow: none; }} }}
                                         body {{ font-family: 'Courier New', monospace; background: #f5f5f5; display: flex; justify-content: center; padding: 20px; }}
-                                        .receipt {{ background: white; width: 320px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); border-radius: 8px; }}
+                                        .receipt {{ background: white; width: 350px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); border-radius: 8px; }}
                                         .header {{ text-align: center; border-bottom: 2px dashed #333; padding-bottom: 10px; margin-bottom: 10px; }}
                                         .header h1 {{ margin: 0; font-size: 20px; color: #003366; }}
                                         .header p {{ margin: 2px 0; font-size: 12px; color: #666; }}
@@ -999,6 +1001,7 @@ def main():
                                         .footer {{ text-align: center; font-size: 11px; color: #666; margin-top: 15px; padding-top: 10px; border-top: 2px dashed #333; }}
                                         .footer .thank {{ font-size: 14px; font-weight: bold; color: #003366; }}
                                         .status {{ text-align: center; margin: 10px 0; padding: 5px; border-radius: 4px; font-weight: bold; background: #e8f5e9; color: #2e7d32; }}
+                                        .status.partial {{ background: #fff3e0; color: #e65100; }}
                                         .no-print {{ text-align: center; margin-top: 20px; }}
                                         .no-print button {{ padding: 10px 30px; font-size: 16px; background: #003366; color: white; border: none; border-radius: 5px; cursor: pointer; margin: 0 5px; }}
                                         .no-print button:hover {{ background: #004488; }}
@@ -1013,23 +1016,34 @@ def main():
                                             <p>Phone: +91 98765 43210</p>
                                         </div>
                                         <div class="details">
-                                            <div class="row"><span><strong>Payment Receipt</strong></span><span><strong>#{receipt_no}</strong></span></div>
+                                            <div class="row"><span><strong>PAYMENT RECEIPT</strong></span><span><strong>#{receipt_no}</strong></span></div>
                                             <div class="row"><span><strong>Date:</strong> {datetime.now().strftime('%d-%m-%Y %H:%M')}</span></div>
                                         </div>
                                         <div class="payment-info">
                                             <div class="row"><span>Party:</span><span><strong>{party}</strong></span></div>
                                             <div class="row"><span>Invoice No:</span><span><strong>{final_invoice}</strong></span></div>
-                                            <div class="row bold"><span>Amount Received:</span><span><strong>₹{amount:.2f}</strong></span></div>
+                                            <div class="row bold" style="font-size:18px; color:#003366;">
+                                                <span>Amount Received:</span>
+                                                <span><strong>₹{amount:,.2f}</strong></span>
+                                            </div>
                                             <div class="row"><span>Payment Mode:</span><span><strong>{payment_mode}</strong></span></div>
                                         </div>
                                         <div class="total-section">
-                                            <div class="total-row"><span>Invoice Total</span><span>₹{total:.2f}</span></div>
-                                            <div class="total-row"><span>Total Paid</span><span>₹{total - new_balance:.2f}</span></div>
-                                            <div class="total-row bold"><span>Balance Due</span><span>₹{new_balance:.2f}</span></div>
+                                            <div class="total-row"><span>Invoice Total</span><span>₹{total:,.2f}</span></div>
+                                            <div class="total-row"><span>Total Paid (including this)</span><span>₹{(total - new_balance):,.2f}</span></div>
+                                            <div class="total-row bold" style="font-size:18px;">
+                                                <span>Balance Due</span>
+                                                <span style="color: {'#2e7d32' if new_balance <= 0 else '#e65100'}">₹{new_balance:,.2f}</span>
+                                            </div>
                                         </div>
-                                        <div class="status">{'✅ PAID IN FULL' if new_balance <= 0 else f'⚠️ BALANCE DUE: ₹{new_balance:.2f}'}</div>
+                                        <div class="status {'partial' if new_balance > 0 else ''}">
+                                            {'✅ PAID IN FULL' if new_balance <= 0 else f'⚠️ BALANCE DUE: ₹{new_balance:,.2f}'}
+                                        </div>
                                         {f'<div class="remarks"><strong>Remarks:</strong> {remarks}</div>' if remarks else ''}
-                                        <div class="footer"><div class="thank">Thank You for Your Payment!</div><p>This is a system generated payment receipt</p></div>
+                                        <div class="footer">
+                                            <div class="thank">Thank You for Your Payment!</div>
+                                            <p>This is a system generated payment receipt</p>
+                                        </div>
                                     </div>
                                     <div class="no-print">
                                         <button onclick="window.print()">🖨️ Print Receipt</button>
@@ -1038,9 +1052,13 @@ def main():
                                 </body>
                                 </html>
                                 """
-                                st.components.v1.html(payment_html, height=600)
+                                st.components.v1.html(payment_receipt_html, height=650)
                                 st.balloons()
+                                
+                                # Update invoice status in session
                                 st.rerun()
+
+    # ==================== END CASH RECEIPT ====================
 
     # ==================== PARTY LEDGER ====================
     elif menu == "📒 Party Ledger":
