@@ -694,7 +694,7 @@ def main():
         
         if not parties.empty:
             for idx, row in parties.iterrows():
-                col1, col2, col3, col4, col5, col6 = st.columns([2, 1.2, 1, 0.8, 0.8, 0.8])
+                col1, col2, col3, col4, col5, col6, col7 = st.columns([2, 1.2, 1, 0.8, 0.8, 0.8, 1.5])
                 with col1:
                     st.write(f"**{row['name']}**")
                 with col2:
@@ -714,19 +714,51 @@ def main():
                         has_sales = not sales[sales['party'] == row['name']].empty
                         
                         if has_sales:
-                            # Show warning with option to force delete
+                            # Show warning with force delete option
                             st.warning(f"⚠️ {row['name']} has {len(sales[sales['party'] == row['name']])} sales records!")
-                            if st.button(f"⚠️ Force Delete {row['name']} (WARNING: Deletes all sales!)", key=f"force_del_{idx}"):
-                                if delete_party(row['party_id']):
+                            if st.button(f"💥 Force Delete {row['name']}", key=f"force_del_{idx}"):
+                                # Force delete - deletes all associated records
+                                conn = get_conn()
+                                c = conn.cursor()
+                                try:
+                                    # Delete sales items for this party's invoices
+                                    c.execute("DELETE FROM sales_items WHERE invoice_no IN (SELECT invoice_no FROM sales WHERE party = ?)", (row['name'],))
+                                    # Delete receipts for this party
+                                    c.execute("DELETE FROM receipts WHERE party = ?", (row['name'],))
+                                    # Delete sales for this party
+                                    c.execute("DELETE FROM sales WHERE party = ?", (row['name'],))
+                                    # Delete the party
+                                    c.execute("DELETE FROM parties WHERE party_id = ?", (row['party_id'],))
+                                    conn.commit()
                                     st.success(f"✅ {row['name']} and all associated records deleted!")
                                     st.rerun()
-                                else:
-                                    st.error("❌ Failed to delete party")
+                                except Exception as e:
+                                    conn.rollback()
+                                    st.error(f"❌ Error deleting: {str(e)}")
+                                finally:
+                                    conn.close()
                         else:
                             # No sales, safe to delete
-                            if delete_party(row['party_id']):
+                            conn = get_conn()
+                            c = conn.cursor()
+                            try:
+                                c.execute("DELETE FROM parties WHERE party_id = ?", (row['party_id'],))
+                                conn.commit()
                                 st.success(f"✅ {row['name']} deleted!")
                                 st.rerun()
+                            except Exception as e:
+                                conn.rollback()
+                                st.error(f"❌ Error deleting: {str(e)}")
+                            finally:
+                                conn.close()
+                with col7:
+                    # Show if party has sales
+                    sales = get_sales()
+                    has_sales = not sales[sales['party'] == row['name']].empty
+                    if has_sales:
+                        st.write("🔴 Has Sales")
+                    else:
+                        st.write("🟢 No Sales")
                 st.divider()
             
             # Edit modal
@@ -747,14 +779,26 @@ def main():
                         col1, col2 = st.columns(2)
                         with col1:
                             if st.form_submit_button("💾 Save"):
-                                update_party(party['party_id'], name, mobile, whatsapp, address, opening_balance, gst_no)
-                                st.success(f"✅ Party updated!")
-                                del st.session_state.edit_party_id
-                                st.rerun()
+                                conn = get_conn()
+                                c = conn.cursor()
+                                try:
+                                    c.execute("UPDATE parties SET name=?, mobile=?, whatsapp=?, address=?, opening_balance=?, gst_no=? WHERE party_id=?",
+                                              (name, mobile, whatsapp, address, opening_balance, gst_no, party['party_id']))
+                                    conn.commit()
+                                    st.success(f"✅ Party updated!")
+                                    del st.session_state.edit_party_id
+                                    st.rerun()
+                                except Exception as e:
+                                    conn.rollback()
+                                    st.error(f"❌ Error updating: {str(e)}")
+                                finally:
+                                    conn.close()
                         with col2:
                             if st.form_submit_button("❌ Cancel"):
                                 del st.session_state.edit_party_id
                                 st.rerun()
+        else:
+            st.info("No parties added yet")
         
         # Add Party
         st.subheader("➕ Add New Party")
@@ -772,9 +816,19 @@ def main():
             if st.form_submit_button("Add Party"):
                 if name:
                     party_id = get_next_party_id()
-                    add_party(party_id, name, mobile, whatsapp, address, opening_balance, gst_no)
-                    st.success(f"✅ Party '{name}' added!")
-                    st.rerun()
+                    conn = get_conn()
+                    c = conn.cursor()
+                    try:
+                        c.execute("INSERT INTO parties (party_id, name, mobile, whatsapp, address, opening_balance, gst_no) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                                  (party_id, name, mobile, whatsapp, address, opening_balance, gst_no))
+                        conn.commit()
+                        st.success(f"✅ Party '{name}' added!")
+                        st.rerun()
+                    except Exception as e:
+                        conn.rollback()
+                        st.error(f"❌ Error adding party: {str(e)}")
+                    finally:
+                        conn.close()
 
     # ==================== BILLING ====================
     elif menu == "🧾 Billing":
