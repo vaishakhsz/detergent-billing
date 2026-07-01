@@ -1,6 +1,6 @@
 """
 Detergent Billing System - Fully Working
-Fixed: Cart persistence, Invoice printing
+With Cash Receipt Printing
 """
 
 import streamlit as st
@@ -311,10 +311,10 @@ def init_data():
         for p in defaults:
             add_product(*p)
 
-# ==================== RECEIPT HTML ====================
+# ==================== RECEIPT HTML GENERATORS ====================
 
-def get_receipt_html(invoice_no, party, cart, total, paid, balance):
-    """Generate printable receipt HTML"""
+def get_invoice_receipt_html(invoice_no, party, cart, total, paid, balance):
+    """Generate printable invoice receipt HTML"""
     
     items_html = ""
     for item in cart:
@@ -327,12 +327,15 @@ def get_receipt_html(invoice_no, party, cart, total, paid, balance):
         </tr>
         """
     
+    status_class = 'paid' if balance <= 0 else 'partial' if paid > 0 else 'unpaid'
+    status_text = '✅ PAID' if balance <= 0 else '⚠️ PARTIALLY PAID' if paid > 0 else '❌ UNPAID'
+    
     html = f"""
     <!DOCTYPE html>
     <html>
     <head>
         <meta charset="UTF-8">
-        <title>Receipt {invoice_no}</title>
+        <title>Invoice {invoice_no}</title>
         <style>
             @media print {{
                 .no-print {{ display: none; }}
@@ -396,12 +399,8 @@ def get_receipt_html(invoice_no, party, cart, total, paid, balance):
                 padding: 4px 2px;
                 border-bottom: 1px dotted #ddd;
             }}
-            .right {{
-                text-align: right;
-            }}
-            .center {{
-                text-align: center;
-            }}
+            .right {{ text-align: right; }}
+            .center {{ text-align: center; }}
             .total-section {{
                 margin-top: 10px;
                 padding-top: 10px;
@@ -437,18 +436,9 @@ def get_receipt_html(invoice_no, party, cart, total, paid, balance):
                 border-radius: 4px;
                 font-weight: bold;
             }}
-            .status.unpaid {{
-                background: #ffebee;
-                color: #c62828;
-            }}
-            .status.paid {{
-                background: #e8f5e9;
-                color: #2e7d32;
-            }}
-            .status.partial {{
-                background: #fff3e0;
-                color: #e65100;
-            }}
+            .status.paid {{ background: #e8f5e9; color: #2e7d32; }}
+            .status.unpaid {{ background: #ffebee; color: #c62828; }}
+            .status.partial {{ background: #fff3e0; color: #e65100; }}
             .no-print {{
                 text-align: center;
                 margin-top: 20px;
@@ -463,13 +453,11 @@ def get_receipt_html(invoice_no, party, cart, total, paid, balance):
                 cursor: pointer;
                 margin: 0 5px;
             }}
-            .no-print button:hover {{
-                background: #004488;
-            }}
+            .no-print button:hover {{ background: #004488; }}
         </style>
     </head>
     <body>
-        <div class="receipt" id="receipt">
+        <div class="receipt">
             <div class="header">
                 <h1>🧺 DETERGENT MART</h1>
                 <p>123 Main Street, City</p>
@@ -515,9 +503,7 @@ def get_receipt_html(invoice_no, party, cart, total, paid, balance):
                 </div>
             </div>
             
-            <div class="status {'paid' if balance <= 0 else 'partial' if paid > 0 else 'unpaid'}">
-                {'✅ PAID' if balance <= 0 else '⚠️ PARTIALLY PAID' if paid > 0 else '❌ UNPAID'}
-            </div>
+            <div class="status {status_class}">{status_text}</div>
             
             <div class="footer">
                 <div class="thank">Thank You!</div>
@@ -530,11 +516,214 @@ def get_receipt_html(invoice_no, party, cart, total, paid, balance):
             <button onclick="window.print()">🖨️ Print Receipt</button>
             <button onclick="window.close()">Close</button>
         </div>
+    </body>
+    </html>
+    """
+    return html
+
+
+def get_payment_receipt_html(receipt_no, party, invoice_no, amount, payment_mode, remarks, balance, total):
+    """Generate printable payment receipt HTML"""
+    
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>Payment Receipt {receipt_no}</title>
+        <style>
+            @media print {{
+                .no-print {{ display: none; }}
+                body {{ margin: 0; padding: 20px; }}
+                .receipt {{ box-shadow: none; }}
+            }}
+            body {{
+                font-family: 'Courier New', monospace;
+                background: #f5f5f5;
+                display: flex;
+                justify-content: center;
+                padding: 20px;
+            }}
+            .receipt {{
+                background: white;
+                width: 320px;
+                padding: 20px;
+                box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+                border-radius: 8px;
+            }}
+            .header {{
+                text-align: center;
+                border-bottom: 2px dashed #333;
+                padding-bottom: 10px;
+                margin-bottom: 10px;
+            }}
+            .header h1 {{
+                margin: 0;
+                font-size: 20px;
+                color: #003366;
+            }}
+            .header p {{
+                margin: 2px 0;
+                font-size: 12px;
+                color: #666;
+            }}
+            .details {{
+                font-size: 12px;
+                margin-bottom: 10px;
+                padding: 5px 0;
+                border-bottom: 1px dotted #ccc;
+            }}
+            .details .row {{
+                display: flex;
+                justify-content: space-between;
+                padding: 2px 0;
+            }}
+            .payment-info {{
+                background: #f0f7ff;
+                padding: 15px;
+                border-radius: 8px;
+                margin: 10px 0;
+            }}
+            .payment-info .row {{
+                display: flex;
+                justify-content: space-between;
+                padding: 4px 0;
+                font-size: 14px;
+            }}
+            .payment-info .row.bold {{
+                font-weight: bold;
+                font-size: 16px;
+            }}
+            .total-section {{
+                margin-top: 10px;
+                padding-top: 10px;
+                border-top: 2px dashed #333;
+            }}
+            .total-row {{
+                display: flex;
+                justify-content: space-between;
+                font-size: 14px;
+                padding: 3px 0;
+            }}
+            .total-row.bold {{
+                font-weight: bold;
+                font-size: 16px;
+            }}
+            .footer {{
+                text-align: center;
+                font-size: 11px;
+                color: #666;
+                margin-top: 15px;
+                padding-top: 10px;
+                border-top: 2px dashed #333;
+            }}
+            .footer .thank {{
+                font-size: 14px;
+                font-weight: bold;
+                color: #003366;
+            }}
+            .status {{
+                text-align: center;
+                margin: 10px 0;
+                padding: 5px;
+                border-radius: 4px;
+                font-weight: bold;
+                background: #e8f5e9;
+                color: #2e7d32;
+            }}
+            .no-print {{
+                text-align: center;
+                margin-top: 20px;
+            }}
+            .no-print button {{
+                padding: 10px 30px;
+                font-size: 16px;
+                background: #003366;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                cursor: pointer;
+                margin: 0 5px;
+            }}
+            .no-print button:hover {{ background: #004488; }}
+            .remarks {{
+                font-size: 11px;
+                color: #666;
+                margin-top: 5px;
+                padding: 5px;
+                background: #f9f9f9;
+                border-radius: 4px;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="receipt">
+            <div class="header">
+                <h1>🧺 DETERGENT MART</h1>
+                <p>123 Main Street, City</p>
+                <p>Phone: +91 98765 43210</p>
+            </div>
+            
+            <div class="details">
+                <div class="row">
+                    <span><strong>Payment Receipt</strong></span>
+                    <span><strong>#{receipt_no}</strong></span>
+                </div>
+                <div class="row">
+                    <span><strong>Date:</strong> {datetime.now().strftime('%d-%m-%Y %H:%M')}</span>
+                </div>
+            </div>
+            
+            <div class="payment-info">
+                <div class="row">
+                    <span>Party:</span>
+                    <span><strong>{party}</strong></span>
+                </div>
+                <div class="row">
+                    <span>Invoice No:</span>
+                    <span><strong>{invoice_no}</strong></span>
+                </div>
+                <div class="row bold">
+                    <span>Amount Received:</span>
+                    <span><strong>₹{amount:.2f}</strong></span>
+                </div>
+                <div class="row">
+                    <span>Payment Mode:</span>
+                    <span><strong>{payment_mode}</strong></span>
+                </div>
+            </div>
+            
+            <div class="total-section">
+                <div class="total-row">
+                    <span>Invoice Total</span>
+                    <span>₹{total:.2f}</span>
+                </div>
+                <div class="total-row">
+                    <span>Total Paid</span>
+                    <span>₹{total - balance:.2f}</span>
+                </div>
+                <div class="total-row bold">
+                    <span>Balance Due</span>
+                    <span>₹{balance:.2f}</span>
+                </div>
+            </div>
+            
+            <div class="status">
+                {'✅ PAID IN FULL' if balance <= 0 else f'⚠️ BALANCE DUE: ₹{balance:.2f}'}
+            </div>
+            
+            {f'<div class="remarks"><strong>Remarks:</strong> {remarks}</div>' if remarks else ''}
+            
+            <div class="footer">
+                <div class="thank">Thank You for Your Payment!</div>
+                <p>This is a system generated payment receipt</p>
+            </div>
+        </div>
         
-        <script>
-            // Auto-print when page loads (optional - uncomment to auto-print)
-            // window.onload = function() {{ window.print(); }};
-        </script>
+        <div class="no-print">
+            <button onclick="window.print()">🖨️ Print Receipt</button>
+            <button onclick="window.close()">Close</button>
+        </div>
     </body>
     </html>
     """
@@ -567,9 +756,9 @@ def main():
     if 'cart' not in st.session_state:
         st.session_state.cart = []
     
-    # Track if cart was just cleared
-    if 'cart_cleared' not in st.session_state:
-        st.session_state.cart_cleared = False
+    # Store last payment receipt
+    if 'last_payment' not in st.session_state:
+        st.session_state.last_payment = None
 
     # ==================== DASHBOARD ====================
     if menu == "📊 Dashboard":
@@ -846,21 +1035,11 @@ def main():
                     invoice_no, total = create_invoice(party, st.session_state.cart)
                     st.success(f"✅ Invoice {invoice_no} generated! Total: ₹{total:,.2f}")
                     
-                    # Store invoice data for printing
-                    st.session_state.last_invoice = {
-                        'invoice_no': invoice_no,
-                        'party': party,
-                        'cart': st.session_state.cart.copy(),
-                        'total': total,
-                        'paid': 0,
-                        'balance': total
-                    }
-                    
                     # Show receipt
                     st.markdown("---")
-                    st.subheader("🧾 Receipt")
+                    st.subheader("🧾 Invoice Receipt")
                     
-                    receipt_html = get_receipt_html(
+                    receipt_html = get_invoice_receipt_html(
                         invoice_no, 
                         party, 
                         st.session_state.cart, 
@@ -878,7 +1057,7 @@ def main():
             if 'last_invoice' in st.session_state:
                 if st.button("🖨️ Print Last Invoice", use_container_width=True):
                     inv = st.session_state.last_invoice
-                    receipt_html = get_receipt_html(
+                    receipt_html = get_invoice_receipt_html(
                         inv['invoice_no'],
                         inv['party'],
                         inv['cart'],
@@ -894,6 +1073,7 @@ def main():
         
         parties = get_parties()
         sales = get_sales()
+        receipts = get_receipts()
         
         if parties.empty:
             st.warning("⚠️ No parties!")
@@ -967,7 +1147,38 @@ def main():
                                 receipt_no = add_receipt(party, final_invoice, amount, payment_mode, remarks)
                                 st.success(f"✅ Receipt {receipt_no} recorded! Amount: ₹{amount:,.2f}")
                                 st.balloons()
+                                
+                                # Store payment details for printing
+                                st.session_state.last_payment = {
+                                    'receipt_no': receipt_no,
+                                    'party': party,
+                                    'invoice_no': final_invoice,
+                                    'amount': amount,
+                                    'payment_mode': payment_mode,
+                                    'remarks': remarks,
+                                    'balance': balance - amount,
+                                    'total': total
+                                }
+                                
                                 st.rerun()
+        
+        # ==================== SHOW PAYMENT RECEIPT ====================
+        if 'last_payment' in st.session_state and st.session_state.last_payment:
+            st.markdown("---")
+            st.subheader("🧾 Payment Receipt")
+            
+            payment = st.session_state.last_payment
+            receipt_html = get_payment_receipt_html(
+                payment['receipt_no'],
+                payment['party'],
+                payment['invoice_no'],
+                payment['amount'],
+                payment['payment_mode'],
+                payment['remarks'],
+                payment['balance'],
+                payment['total']
+            )
+            st.components.v1.html(receipt_html, height=650)
 
     # ==================== PARTY LEDGER ====================
     elif menu == "📒 Party Ledger":
