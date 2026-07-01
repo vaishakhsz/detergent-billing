@@ -1,13 +1,13 @@
 """
 Complete Detergent Billing System
-With Party Ledger, Invoice-wise Collection, and Cash Receipt
-Fixed: Manual Refresh to prevent data loss
+Fixed: Auto-refresh after adding, Rate limit handling
 """
 
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 import json
+import time
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
@@ -24,10 +24,14 @@ def init_session_state():
     """Initialize session state variables"""
     if 'cart' not in st.session_state:
         st.session_state.cart = []
-    if 'refresh_trigger' not in st.session_state:
-        st.session_state.refresh_trigger = 0
     if 'data_loaded' not in st.session_state:
         st.session_state.data_loaded = False
+    if 'last_refresh' not in st.session_state:
+        st.session_state.last_refresh = datetime.now().strftime("%H:%M:%S")
+    if 'parties_cache' not in st.session_state:
+        st.session_state.parties_cache = pd.DataFrame()
+    if 'products_cache' not in st.session_state:
+        st.session_state.products_cache = pd.DataFrame()
 
 # ==================== GOOGLE SHEETS SETUP ====================
 
@@ -51,11 +55,17 @@ def get_sheets_service():
 def get_sheet_id():
     return "1jaat8u_k7rQyqhPcdL4zmUkkuG8gpwwk6z-Tvv2SMrQ"
 
-# REMOVED CACHING - Always fetch fresh data
-def get_data(service, sheet_name):
-    """Get data from sheet - ALWAYS FRESH"""
+def get_data(service, sheet_name, use_cache=True):
+    """Get data from sheet with optional caching"""
     if not service:
         return pd.DataFrame()
+    
+    # Check cache for parties
+    if use_cache and sheet_name == 'Parties' and not st.session_state.parties_cache.empty:
+        return st.session_state.parties_cache
+    
+    if use_cache and sheet_name == 'Products' and not st.session_state.products_cache.empty:
+        return st.session_state.products_cache
     
     try:
         result = service.spreadsheets().values().get(
@@ -68,10 +78,23 @@ def get_data(service, sheet_name):
         headers = values[0]
         rows = values[1:]
         df = pd.DataFrame(rows, columns=headers)
+        
+        # Update cache
+        if sheet_name == 'Parties':
+            st.session_state.parties_cache = df
+        elif sheet_name == 'Products':
+            st.session_state.products_cache = df
+        
         return df
     except Exception as e:
         if "429" in str(e):
-            st.warning("⏳ Rate limit reached. Please wait a moment.")
+            st.warning("⏳ Google Sheets rate limit reached. Please wait 30 seconds...")
+            time.sleep(2)
+            # Return cached data if available
+            if sheet_name == 'Parties' and not st.session_state.parties_cache.empty:
+                return st.session_state.parties_cache
+            if sheet_name == 'Products' and not st.session_state.products_cache.empty:
+                return st.session_state.products_cache
             return pd.DataFrame()
         return pd.DataFrame()
 
@@ -85,8 +108,16 @@ def add_row_only(service, sheet_name, row_data):
             valueInputOption='USER_ENTERED',
             body=body
         ).execute()
+        # Clear cache for this sheet
+        if sheet_name == 'Parties':
+            st.session_state.parties_cache = pd.DataFrame()
+        elif sheet_name == 'Products':
+            st.session_state.products_cache = pd.DataFrame()
         return result.get('updates', {}).get('updatedRows', 0) > 0
     except Exception as e:
+        if "429" in str(e):
+            st.error("❌ Rate limit reached. Please wait 30 seconds and try again.")
+            return False
         st.error(f"❌ Error adding row: {str(e)}")
         return False
 
@@ -99,13 +130,21 @@ def update_cell(service, sheet_name, range_name, value):
             valueInputOption='USER_ENTERED',
             body={'values': [[str(value)]]}
         ).execute()
+        # Clear cache
+        if sheet_name == 'Parties':
+            st.session_state.parties_cache = pd.DataFrame()
+        elif sheet_name == 'Products':
+            st.session_state.products_cache = pd.DataFrame()
         return True
     except Exception as e:
+        if "429" in str(e):
+            st.warning("⏳ Rate limit reached. Please wait.")
+            return False
         st.error(f"Error updating cell: {str(e)}")
         return False
 
 def create_sheet_if_not_exists(service, sheet_name, headers):
-    """Create sheet ONLY if it doesn't exist - NO OVERWRITE"""
+    """Create sheet if not exists"""
     try:
         spreadsheet = service.spreadsheets().get(
             spreadsheetId=get_sheet_id()
@@ -113,22 +152,9 @@ def create_sheet_if_not_exists(service, sheet_name, headers):
         sheets = spreadsheet.get('sheets', [])
         sheet_names = [sheet['properties']['title'] for sheet in sheets]
         
-        # If sheet exists, DON'T modify it
         if sheet_name in sheet_names:
-            # Just check if it has data, but don't overwrite
-            df = get_data(service, sheet_name)
-            if df.empty:
-                # Sheet exists but empty - add headers only
-                values = [headers]
-                service.spreadsheets().values().update(
-                    spreadsheetId=get_sheet_id(),
-                    range=f"{sheet_name}!A1",
-                    valueInputOption='USER_ENTERED',
-                    body={'values': values}
-                ).execute()
             return True
         
-        # Only create if it doesn't exist
         body = {
             'requests': [{
                 'addSheet': {
@@ -141,7 +167,6 @@ def create_sheet_if_not_exists(service, sheet_name, headers):
             body=body
         ).execute()
         
-        # Add headers to new sheet
         values = [headers]
         service.spreadsheets().values().update(
             spreadsheetId=get_sheet_id(),
@@ -157,7 +182,7 @@ def create_sheet_if_not_exists(service, sheet_name, headers):
 # ==================== INIT ====================
 
 def init_sheets(service):
-    """Initialize sheets - ONLY CREATE IF MISSING, NEVER OVERWRITE"""
+    """Initialize sheets"""
     try:
         sheets = {
             'Products': ['Product ID', 'Product Name', 'Rate', 'Stock'],
@@ -171,7 +196,7 @@ def init_sheets(service):
             create_sheet_if_not_exists(service, sheet_name, headers)
         
         # ONLY add default products if Products sheet is completely empty
-        products = get_data(service, 'Products')
+        products = get_data(service, 'Products', use_cache=False)
         if products.empty:
             defaults = [
                 ['P001', 'Dishwash Liquid 1L', '120', '100'],
@@ -225,7 +250,7 @@ def get_next_receipt_no(service):
 
 def get_next_party_id(service):
     """Generate next party ID"""
-    parties = get_data(service, 'Parties')
+    parties = get_data(service, 'Parties', use_cache=False)
     if parties.empty:
         return "PT001"
     try:
@@ -320,6 +345,15 @@ def check_columns(df, required_columns):
     missing = [col for col in required_columns if col not in df.columns]
     return len(missing) == 0, missing
 
+# ==================== FORCE REFRESH ====================
+
+def force_refresh():
+    """Force refresh all data"""
+    st.session_state.parties_cache = pd.DataFrame()
+    st.session_state.products_cache = pd.DataFrame()
+    st.session_state.last_refresh = datetime.now().strftime("%H:%M:%S")
+    st.rerun()
+
 # ==================== MAIN APP ====================
 
 def main():
@@ -351,15 +385,13 @@ def main():
     # Refresh Button
     col1, col2 = st.sidebar.columns([3, 1])
     with col1:
-        st.sidebar.write("🔄 Refresh Data")
+        st.sidebar.write(f"🔄 Refresh Data")
     with col2:
-        if st.sidebar.button("🔄", help="Refresh all data from Google Sheets"):
-            st.cache_data.clear()
-            st.session_state.refresh_trigger += 1
-            st.rerun()
+        if st.sidebar.button("🔄", help="Refresh all data"):
+            force_refresh()
     
     st.sidebar.markdown("---")
-    st.sidebar.info(f"Last refresh: {datetime.now().strftime('%H:%M:%S')}")
+    st.sidebar.info(f"⏰ Last refresh: {st.session_state.last_refresh}")
     st.sidebar.info("Made with ❤️ using Streamlit")
     
     # Menu
@@ -434,7 +466,7 @@ def main():
                         if change != 0:
                             if update_stock(service, selected, change):
                                 st.success(f"✅ Stock updated!")
-                                st.rerun()
+                                force_refresh()
             else:
                 st.info("No products available")
         
@@ -451,9 +483,9 @@ def main():
                     if name and rate > 0:
                         products = get_data(service, 'Products')
                         product_id = f"P{len(products)+1:03d}"
-                        add_row_only(service, 'Products', [product_id, name, str(rate), str(stock)])
-                        st.success(f"✅ Product '{name}' added!")
-                        st.rerun()
+                        if add_row_only(service, 'Products', [product_id, name, str(rate), str(stock)]):
+                            st.success(f"✅ Product '{name}' added!")
+                            force_refresh()
 
     # ==================== PARTIES ====================
     elif menu == "🏪 Parties":
@@ -463,8 +495,8 @@ def main():
             st.error("❌ Not connected")
             return
         
-        # Force fresh data
-        parties = get_data(service, 'Parties')
+        # Force fresh data - bypass cache
+        parties = get_data(service, 'Parties', use_cache=False)
         
         tab1, tab2 = st.tabs(["Manage Parties", "Add Party"])
         
@@ -475,6 +507,7 @@ def main():
                 st.warning("⚠️ No parties found in Google Sheets")
                 st.info("💡 Click 'Add Party' tab to add a new party")
                 st.info("💡 Or click the '🔄' refresh button in sidebar")
+                st.info(f"📊 Data loaded at: {st.session_state.last_refresh}")
             else:
                 if 'Party Name' not in parties.columns:
                     st.error("❌ 'Party Name' column not found!")
@@ -484,6 +517,8 @@ def main():
                     st.dataframe(parties, use_container_width=True)
         
         with tab2:
+            st.subheader("➕ Add New Party")
+            
             with st.form("add_party_form"):
                 col1, col2 = st.columns(2)
                 with col1:
@@ -495,14 +530,26 @@ def main():
                     opening_balance = st.number_input("Opening Balance (₹)", min_value=0.0, step=100.0, value=0.0)
                     gst_no = st.text_input("GST No (Optional)")
                 
-                if st.form_submit_button("Add Party"):
-                    if party_name:
+                submitted = st.form_submit_button("✅ Add Party", type="primary")
+                
+                if submitted:
+                    if not party_name:
+                        st.error("❌ Party Name is required!")
+                    else:
+                        # Get fresh party ID
                         party_id = get_next_party_id(service)
                         row_data = [party_id, party_name, mobile, whatsapp, address, str(opening_balance), gst_no]
-                        if add_row_only(service, 'Parties', row_data):
-                            st.success(f"✅ Party '{party_name}' added!")
+                        
+                        st.info(f"📝 Adding: {party_name} (ID: {party_id})")
+                        
+                        success = add_row_only(service, 'Parties', row_data)
+                        
+                        if success:
+                            st.success(f"✅ Party '{party_name}' added successfully!")
                             st.balloons()
-                            st.rerun()
+                            # Force refresh immediately
+                            time.sleep(1)
+                            force_refresh()
                         else:
                             st.error("❌ Failed to add party. Check if sheet is shared correctly.")
 
@@ -603,7 +650,7 @@ def main():
                 
                 st.success(f"✅ Invoice {invoice_no} generated! Total: ₹{total:,.2f}")
                 st.session_state.cart = []
-                st.rerun()
+                force_refresh()
 
     # ==================== CASH RECEIPT ====================
     elif menu == "💰 Cash Receipt":
@@ -728,7 +775,7 @@ def main():
                                     st.success(f"✅ Receipt {receipt_no} recorded!")
                                     st.info(f"**Invoice:** {final_invoice} | **Amount:** ₹{amount:,.2f} | **Mode:** {payment_mode}")
                                     st.balloons()
-                                    st.rerun()
+                                    force_refresh()
 
     # ==================== PARTY LEDGER ====================
     elif menu == "📒 Party Ledger":
