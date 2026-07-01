@@ -894,11 +894,14 @@ def main():
 
      # ==================== CASH RECEIPT ====================
         elif menu == "💰 Cash Receipt":
-        st.header("💰 Cash Receipt Entry")
+            
+            st.header("💰 Cash Receipt Entry")
+            
         
-        parties = get_parties()
-        sales = get_sales()
-        receipts = get_receipts()
+            parties = get_parties()
+            sales = get_sales()
+            receipts = get_receipts()
+        
         
         if parties.empty:
             st.warning("⚠️ No parties! Add parties first.")
